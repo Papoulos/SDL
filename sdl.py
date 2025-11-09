@@ -8,6 +8,9 @@ import logging
 import time
 import re
 import base64
+import os
+import shutil
+from PIL import Image
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -51,8 +54,25 @@ def scroll_to_bottom(driver):
         last_height = new_height
     logging.info("Finished scrolling.")
 
+def create_pdf_from_images(image_folder, pdf_filename):
+    """Converts a list of images into a single PDF file."""
+    images = []
+    for filename in sorted(os.listdir(image_folder)):
+        if filename.endswith(".png"):
+            filepath = os.path.join(image_folder, filename)
+            im = Image.open(filepath)
+            im = im.convert("RGB")
+            images.append(im)
+
+    if images:
+        images[0].save(pdf_filename, save_all=True, append_images=images[1:])
+        logging.info(f"Successfully created PDF: {pdf_filename}")
+    else:
+        logging.warning("No images found to create a PDF.")
+
 def download_document_as_pdf(driver, url):
     """Navigates to the URL and saves the document as a PDF."""
+    image_folder = ""
     try:
         logging.info(f"Navigating to: {url}")
         driver.get(url)
@@ -64,26 +84,30 @@ def download_document_as_pdf(driver, url):
 
         scroll_to_bottom(driver)
 
-        filename = sanitize_filename(driver.title) + ".pdf"
-        logging.info(f"Attempting to save document as '{filename}'...")
+        # Create a directory to store the screenshots
+        title = sanitize_filename(driver.title)
+        image_folder = title
+        if not os.path.exists(image_folder):
+            os.makedirs(image_folder)
 
-        # Use Chrome DevTools Protocol to print to PDF
-        result = driver.execute_cdp_cmd(
-            "Page.printToPDF",
-            {
-                "landscape": False,
-                "displayHeaderFooter": False,
-                "printBackground": True,
-                "preferCSSPageSize": True,
-            },
+        # Take a screenshot of each page
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'div[id^="page"]'))
         )
+        pages = driver.find_elements(By.CSS_SELECTOR, 'div[id^="page"]')
+        logging.info(f"Found {len(pages)} pages.")
+        for i, page in enumerate(pages):
+            driver.execute_script("arguments[0].scrollIntoView();", page)
+            time.sleep(1)
+            page.screenshot(os.path.join(image_folder, f'page_{i+1}.png'))
+            logging.info(f"Screenshot taken for page {i+1}")
 
-        # Decode the base64 result and save to a file
-        pdf_data = base64.b64decode(result["data"])
-        with open(filename, "wb") as f:
-            f.write(pdf_data)
+        logging.info(f"All pages have been screenshotted and saved in the '{image_folder}' directory.")
 
-        logging.info(f"Successfully saved document as '{filename}'.")
+        # Convert images to PDF
+        pdf_filename = title + ".pdf"
+        create_pdf_from_images(image_folder, pdf_filename)
+
         return True
 
     except TimeoutException:
@@ -95,6 +119,12 @@ def download_document_as_pdf(driver, url):
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return False
+    finally:
+        # Clean up the screenshot directory
+        if image_folder and os.path.exists(image_folder):
+            shutil.rmtree(image_folder)
+            logging.info(f"Cleaned up screenshot directory: {image_folder}")
+
 
 def main():
     """Parses arguments and orchestrates the download."""
