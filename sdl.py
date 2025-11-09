@@ -1,70 +1,103 @@
-#!/bin/python
+"""
+A script to download documents from Scribd.com as PDF files.
+This script uses selenium and a headless Chrome browser to render the document
+and then prints it to a PDF file.
+"""
+import argparse
+import logging
+import time
+import re
 
-from bs4 import BeautifulSoup
-import requests
-import sys
-import shutil
-import os
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
-#print len(sys.argv)
-os.chdir(sys.path[0])
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-if len(sys.argv) ==1:
-	print ("Usage: sudo python scribd.py <link of scribd document>")
-	print ("")
-	print ("For selectable PDFs:")
-	print ("- example: sudo python scribd.py https://www.scribd.com/document/55949937/33-Strategies-of-War")
-	print ("")
-	print ("For PDFs containing Images; use the -p option:")
-	print ("- example: sudo python scribd.py http://scribd.com/doc/17142797/Case-in-Point -p")
-	exit()
+def setup_driver():
+    """Sets up the headless Chrome WebDriver."""
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_experimental_option('prefs', {
+        'printing.print_to_pdf': True,
+    })
+    service = ChromeService(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=options)
 
-response = requests.request(method='GET', url=sys.argv[1])
-soup = BeautifulSoup(response.text, 'html.parser')
-extraction = ''
-train = 1
+def sanitize_filename(filename):
+    """Sanitizes a string to be used as a valid filename."""
+    sanitized = re.sub(r'[\\/*?:"<>|]', "", filename)
+    return sanitized.replace(' ', '_')
 
-title = soup.find('title').get_text().replace(' ', '_')
-print soup.find('title').get_text()
+def scroll_to_bottom(driver):
+    """Scrolls to the bottom of the page to ensure all content is loaded."""
+    logging.info("Scrolling to load all pages of the document...")
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            break
+        last_height = new_height
+    logging.info("Finished scrolling.")
 
-if len(sys.argv) <=2:
-	if os.path.exists(title + '.txt'):
-		os.remove(title + '.txt')
-else:
-	if not os.path.exists(title):
-		os.makedirs(title)
-print
+def download_document_as_pdf(driver, url):
+    """Navigates to the URL and initiates the download."""
+    try:
+        logging.info(f"Navigating to: {url}")
+        driver.get(url)
 
-js_text = soup.find_all('script', type='text/javascript')
-for opening in js_text:
-	for inner_opening in opening:
-		portion1 = inner_opening.find('https://')
-		if not portion1 == -1:
-			portion2 = inner_opening.find('.jsonp')
-			jsonp = inner_opening[portion1:portion2+6]
-			if not jsonp == '':
-				if len(sys.argv) <=2:
-					#print jsonp
-					response = requests.request(method='GET', url=jsonp)
-					page_no = response.text[11:12]
-					response_head =  (response.text).replace('window.page' + page_no + '_callback(["', '').replace('\\n', '').replace('\\', '').replace('"]);', '')
-					#print response_head
-					soup_content = BeautifulSoup(response_head, 'html.parser')
-					#print soup_content.get_text().encode('utf-8')
-					for x in soup_content.find_all('span', {'class':'a'}):
-						xtext = x.get_text().encode('utf-8')
-						print xtext
-						extraction = extraction + xtext + '\n'
-				else:
-					replacement = jsonp.replace('/pages/', '/images/').replace('jsonp', 'jpg')
-					#print replacement
-					print 'Downloading page ' + str(train)
-					response = requests.get(replacement, stream=True)
-					with open(title + '/pic' + str(train) + '.jpg', 'wb') as out_file:
-						shutil.copyfileobj(response.raw, out_file)
-					del response
-					train+=1
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".document_scroller"))
+        )
+        logging.info("Document page loaded successfully.")
 
-if len(sys.argv) <=2:
-	with open(title + '.txt', 'w') as feed:
-		feed.write(extraction)
+        scroll_to_bottom(driver)
+
+        filename = sanitize_filename(driver.title) + '.pdf'
+        logging.info(f"Attempting to save document as '{filename}'...")
+
+        driver.execute_script('window.print();')
+        time.sleep(5)
+
+        logging.info(f"PDF download initiated for '{filename}'.")
+        return True
+
+    except TimeoutException:
+        logging.error("Page load timed out. Please check the URL and your connection.")
+        return False
+    except WebDriverException as e:
+        logging.error(f"A WebDriver error occurred: {e}")
+        return False
+
+def main():
+    """Parses arguments and orchestrates the download."""
+    parser = argparse.ArgumentParser(
+        description='A script to download documents from Scribd as PDF files.',
+        epilog='Example: python3 sdl.py "https://www.scribd.com/document/123456789/My-Document"'
+    )
+    parser.add_argument('url', help='The URL of the Scribd document to download.')
+    args = parser.parse_args()
+
+    if "scribd.com" not in args.url:
+        logging.warning("This script is intended for scribd.com URLs. It may not work correctly with other sites.")
+
+    driver = setup_driver()
+    if driver:
+        try:
+            download_document_as_pdf(driver, args.url)
+        finally:
+            logging.info("Closing the browser.")
+            driver.quit()
+
+if __name__ == '__main__':
+    main()
