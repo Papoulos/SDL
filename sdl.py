@@ -7,6 +7,7 @@ import argparse
 import logging
 import time
 import re
+import base64
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -51,7 +52,7 @@ def scroll_to_bottom(driver):
     logging.info("Finished scrolling.")
 
 def download_document_as_pdf(driver, url):
-    """Navigates to the URL and initiates the download."""
+    """Navigates to the URL and saves the document as a PDF."""
     try:
         logging.info(f"Navigating to: {url}")
         driver.get(url)
@@ -63,13 +64,26 @@ def download_document_as_pdf(driver, url):
 
         scroll_to_bottom(driver)
 
-        filename = sanitize_filename(driver.title) + '.pdf'
+        filename = sanitize_filename(driver.title) + ".pdf"
         logging.info(f"Attempting to save document as '{filename}'...")
 
-        driver.execute_script('window.print();')
-        time.sleep(5)
+        # Use Chrome DevTools Protocol to print to PDF
+        result = driver.execute_cdp_cmd(
+            "Page.printToPDF",
+            {
+                "landscape": False,
+                "displayHeaderFooter": False,
+                "printBackground": True,
+                "preferCSSPageSize": True,
+            },
+        )
 
-        logging.info(f"PDF download initiated for '{filename}'.")
+        # Decode the base64 result and save to a file
+        pdf_data = base64.b64decode(result["data"])
+        with open(filename, "wb") as f:
+            f.write(pdf_data)
+
+        logging.info(f"Successfully saved document as '{filename}'.")
         return True
 
     except TimeoutException:
@@ -77,6 +91,9 @@ def download_document_as_pdf(driver, url):
         return False
     except WebDriverException as e:
         logging.error(f"A WebDriver error occurred: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
         return False
 
 def main():
