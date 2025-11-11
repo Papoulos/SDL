@@ -9,8 +9,6 @@ import time
 import re
 import base64
 import os
-import shutil
-from PIL import Image
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -41,38 +39,8 @@ def sanitize_filename(filename):
     sanitized = re.sub(r'[\\/*?:"<>|]', "", filename)
     return sanitized.replace(' ', '_')
 
-def scroll_to_bottom(driver):
-    """Scrolls to the bottom of the page to ensure all content is loaded."""
-    logging.info("Scrolling to load all pages of the document...")
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(2)
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            break
-        last_height = new_height
-    logging.info("Finished scrolling.")
-
-def create_pdf_from_images(image_folder, pdf_filename):
-    """Converts a list of images into a single PDF file."""
-    images = []
-    for filename in sorted(os.listdir(image_folder)):
-        if filename.endswith(".png"):
-            filepath = os.path.join(image_folder, filename)
-            im = Image.open(filepath)
-            im = im.convert("RGB")
-            images.append(im)
-
-    if images:
-        images[0].save(pdf_filename, save_all=True, append_images=images[1:])
-        logging.info(f"Successfully created PDF: {pdf_filename}")
-    else:
-        logging.warning("No images found to create a PDF.")
-
 def download_document_as_pdf(driver, url):
     """Navigates to the URL and saves the document as a PDF."""
-    image_folder = ""
     try:
         logging.info(f"Navigating to: {url}")
         driver.get(url)
@@ -82,31 +50,59 @@ def download_document_as_pdf(driver, url):
         )
         logging.info("Document page loaded successfully.")
 
-        scroll_to_bottom(driver)
+        # Execute JavaScript to prepare the page for printing
+        logging.info("Executing JavaScript to prepare the page...")
+        driver.execute_async_script("""
+            const done = arguments[arguments.length - 1];
 
-        # Create a directory to store the screenshots
+            // Remove clutter
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay').forEach(el => el.remove());
+            const commentsSection = document.querySelector('.comments_container');
+            if (commentsSection) {
+                commentsSection.remove();
+            }
+
+            // Scroll to bottom to load all content
+            const scroller = document.querySelector('.document_scroller');
+            if (scroller) {
+                const scrollStep = 300;
+                const scrollInterval = 16;
+                const intervalId = setInterval(() => {
+                    const lastScrollTop = scroller.scrollTop;
+                    scroller.scrollTop += scrollStep;
+
+                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight || scroller.scrollTop === lastScrollTop) {
+                        scroller.scrollTop = scroller.scrollHeight;
+                        clearInterval(intervalId);
+                        done();
+                    }
+                }, scrollInterval);
+            } else {
+                done();
+            }
+        """)
+
+        driver.execute_script("document.querySelectorAll('.document_scroller').forEach(el => el.classList.remove('document_scroller'));")
+        logging.info("Page preparation complete.")
+
+        # Print page to PDF
+        logging.info("Printing page to PDF...")
         title = sanitize_filename(driver.title)
-        image_folder = title
-        if not os.path.exists(image_folder):
-            os.makedirs(image_folder)
-
-        # Take a screenshot of each page
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'div[id^="page"]'))
-        )
-        pages = driver.find_elements(By.CSS_SELECTOR, 'div[id^="page"]')
-        logging.info(f"Found {len(pages)} pages.")
-        for i, page in enumerate(pages):
-            driver.execute_script("arguments[0].scrollIntoView();", page)
-            time.sleep(1)
-            page.screenshot(os.path.join(image_folder, f'page_{i+1}.png'))
-            logging.info(f"Screenshot taken for page {i+1}")
-
-        logging.info(f"All pages have been screenshotted and saved in the '{image_folder}' directory.")
-
-        # Convert images to PDF
         pdf_filename = title + ".pdf"
-        create_pdf_from_images(image_folder, pdf_filename)
+
+        # Use Chrome's print to PDF feature
+        result = driver.execute_cdp_cmd(
+            "Page.printToPDF", {
+                "landscape": False,
+                "printBackground": True,
+                "preferCSSPageSize": True,
+            }
+        )
+
+        with open(pdf_filename, "wb") as f:
+            f.write(base64.b64decode(result['data']))
+
+        logging.info(f"Successfully created PDF: {pdf_filename}")
 
         return True
 
@@ -119,11 +115,16 @@ def download_document_as_pdf(driver, url):
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return False
-    finally:
-        # Clean up the screenshot directory
-        if image_folder and os.path.exists(image_folder):
-            shutil.rmtree(image_folder)
-            logging.info(f"Cleaned up screenshot directory: {image_folder}")
+
+
+def get_embed_url(url):
+    """Converts a Scribd document URL to its embed equivalent."""
+    if '/document/' in url:
+        match = re.search(r'/(\d+)/', url)
+        if match:
+            document_id = match.group(1)
+            return f"https://www.scribd.com/embeds/{document_id}/content"
+    return url
 
 
 def main():
@@ -138,10 +139,12 @@ def main():
     if "scribd.com" not in args.url:
         logging.warning("This script is intended for scribd.com URLs. It may not work correctly with other sites.")
 
+    embed_url = get_embed_url(args.url)
+
     driver = setup_driver()
     if driver:
         try:
-            download_document_as_pdf(driver, args.url)
+            download_document_as_pdf(driver, embed_url)
         finally:
             logging.info("Closing the browser.")
             driver.quit()
