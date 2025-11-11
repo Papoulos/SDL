@@ -13,7 +13,6 @@ import io
 
 from pypdf import PdfReader, PdfWriter
 from selenium import webdriver
-from selenium.webdriver.remote.http import Client
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -32,7 +31,7 @@ def float_with_comma(value):
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{value}' is not a valid floating-point number.")
 
-def setup_driver(timeout=300):
+def setup_driver():
     """Sets up the headless Chrome WebDriver."""
     options = webdriver.ChromeOptions()
     options.add_argument('--headless')
@@ -49,9 +48,7 @@ def setup_driver(timeout=300):
         'printing.print_to_pdf': True,
     })
     service = ChromeService(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options,
-        client=Client(timeout=timeout)
-    )
+    driver = webdriver.Chrome(service=service, options=options)
 
     stealth(driver,
             languages=["en-US", "en"],
@@ -256,9 +253,12 @@ def main():
 
     embed_url = get_embed_url(args.url)
 
-    driver = setup_driver(args.timeout)
+    driver = setup_driver()
     if driver:
         try:
+            # Set the command executor timeout
+            driver.command_executor.set_timeout(args.timeout)
+
             download_document_as_pdf(driver, embed_url, args.url, args.crop, args.timeout)
         finally:
             logging.info("Closing the browser.")
