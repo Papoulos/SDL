@@ -108,13 +108,14 @@ def crop_pdf(pdf_data, crop_margins):
 
 
 def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeout=300):
-    """Navigates to the URL and saves the document as a PDF, page by page."""
+    """Navigates to the URL and saves the document as a PDF."""
     try:
         logging.info(f"Navigating to: {url}")
         driver.get(url)
 
         wait = WebDriverWait(driver, timeout)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[id^='page']")))
+        # Use a general locator that indicates the document viewer is ready
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".document_scroller")))
         logging.info("Document viewer loaded.")
 
         try:
@@ -123,60 +124,64 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
             )
             accept_button.click()
             logging.info("Successfully clicked 'Accept All' on cookie banner.")
-            time.sleep(2)  # Wait for the banner to disappear
+            time.sleep(2)
         except TimeoutException:
             logging.info("Cookie banner not found or already accepted.")
 
-        # Remove floating elements that might obscure buttons or content
-        driver.execute_script("""
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .auto_hiding_header').forEach(el => el.remove());
+        # Set the script timeout
+        driver.set_script_timeout(timeout)
+
+        # Execute the proven JavaScript to prepare the page
+        logging.info("Executing JavaScript to scroll and clean the page...")
+        driver.execute_async_script("""
+            const done = arguments[arguments.length - 1];
+            const scroller = document.querySelector('.document_scroller');
+
+            if (!scroller) {
+                console.error('Scroller element not found.');
+                done();
+                return;
+            }
+
+            // 1. Remove clutter
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .comments_container').forEach(el => el.remove());
+
+            // 2. Scroll to the bottom to load all content
+            new Promise(resolve => {
+                const scrollStep = 300;
+                const scrollInterval = 16;
+                const intervalId = setInterval(() => {
+                    const lastScrollTop = scroller.scrollTop;
+                    scroller.scrollTop += scrollStep;
+
+                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight || scroller.scrollTop === lastScrollTop) {
+                        scroller.scrollTop = scroller.scrollHeight;
+                        clearInterval(intervalId);
+                        setTimeout(resolve, 500); // Wait a bit for final render
+                    }
+                }, scrollInterval);
+            }).then(() => {
+                // 3. Remove the scroller class to prepare for printing
+                scroller.classList.remove('document_scroller');
+                console.log('Page preparation complete.');
+                done();
+            });
         """)
+        logging.info("Page preparation complete.")
 
-        # Determine total page count
-        page_indicator_xpath = "//div[contains(@class, 'meta')]//p"
-        page_count_element = wait.until(EC.presence_of_element_located((By.XPATH, page_indicator_xpath)))
-        page_count_text = page_count_element.text
-        match = re.search(r'of\s+(\d+)', page_count_text, re.IGNORECASE)
-        if not match:
-            logging.error(f"Could not determine total page count from text: '{page_count_text}'")
-            return False
-        total_pages = int(match.group(1))
-        logging.info(f"Document has {total_pages} pages.")
+        logging.info("Generating PDF...")
+        print_to_pdf_result = driver.execute_cdp_cmd(
+            "Page.printToPDF", {
+                "printBackground": True,
+                "format": "A4",
+                "landscape": False,
+                "scale": 1
+            })
 
-        next_page_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label*='Next']")))
-
-        pdf_page_streams = []
-
-        for page_num in range(1, total_pages + 1):
-            logging.info(f"Processing page {page_num}/{total_pages}...")
-
-            # Wait for the specific page container to be present in the DOM
-            page_container_selector = f"div#page{page_num}"
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, page_container_selector)))
-
-            # Optional: Add a brief, final wait for the content within the container (e.g., images) to render
-            time.sleep(1.5)
-
-            # Generate PDF of the current view
-            pdf_result = driver.execute_cdp_cmd("Page.printToPDF", { "printBackground": True, "format": "A4" })
-            pdf_page_streams.append(io.BytesIO(base64.b64decode(pdf_result['data'])))
-
-            if page_num < total_pages:
-                next_page_button.click()
-
-        logging.info("All pages processed. Merging into a single PDF...")
-        writer = PdfWriter()
-        for stream in pdf_page_streams:
-            reader = PdfReader(stream)
-            for page in reader.pages:
-                writer.add_page(page)
-
-        merged_pdf_stream = io.BytesIO()
-        writer.write(merged_pdf_stream)
-        pdf_data = merged_pdf_stream.getvalue()
+        pdf_data = base64.b64decode(print_to_pdf_result['data'])
 
         if crop_margins:
-            logging.info("Cropping the final PDF...")
+            logging.info("Cropping the PDF...")
             pdf_data = crop_pdf(pdf_data, crop_margins)
 
         filename_from_url = original_url.rstrip('/').split('/')[-1]
@@ -190,11 +195,11 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
         logging.info(f"Successfully downloaded '{os.path.abspath(filename)}'")
         return True
 
-    except TimeoutException as e:
-        logging.error(f"A timeout occurred during page-by-page processing: {e}")
+    except TimeoutException:
+        logging.error("Page load or element search timed out.")
         return False
     except Exception as e:
-        logging.error(f"An unexpected error occurred during page-by-page processing: {e}")
+        logging.error(f"An unexpected error occurred: {e}")
         return False
 
 
