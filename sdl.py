@@ -24,6 +24,13 @@ from selenium_stealth import stealth
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+def float_with_comma(value):
+    """Converts a string with comma or period as decimal separator to float."""
+    try:
+        return float(value.replace(',', '.'))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a valid floating-point number.")
+
 def setup_driver():
     """Sets up the headless Chrome WebDriver."""
     options = webdriver.ChromeOptions()
@@ -211,15 +218,15 @@ def main():
     """Parses arguments and orchestrates the download."""
     parser = argparse.ArgumentParser(
         description='A script to download documents from Scribd as PDF files.',
-        epilog='Example: python3 sdl.py "https://www.scribd.com/document/123456789/My-Document" --crop 1 3 1 1'
+        epilog='Example: python3 sdl.py "https://www.scribd.com/document/123456789/My-Document" --crop 1 3 1,5 1.5'
     )
     parser.add_argument('url', help='The URL of the Scribd document to download.')
     parser.add_argument(
         '--crop',
         nargs=4,
-        type=float,
+        type=float_with_comma,
         metavar=('TOP', 'BOTTOM', 'LEFT', 'RIGHT'),
-        help='Crop the PDF by removing margins (in cm). Provide four values for top, bottom, left, and right.'
+        help='Crop the PDF by removing margins (in cm). Accepts both "." and "," as decimal separators.'
     )
     args = parser.parse_args()
 
