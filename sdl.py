@@ -143,24 +143,48 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
                 commentsSection.remove();
             }
 
-            // Scroll to bottom to load all content
+            // --- Robust Scrolling Logic ---
             const scroller = document.querySelector('.document_scroller');
-            if (scroller) {
-                const scrollStep = 300;
-                const scrollInterval = 16;
-                const intervalId = setInterval(() => {
-                    const lastScrollTop = scroller.scrollTop;
-                    scroller.scrollTop += scrollStep;
-
-                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight || scroller.scrollTop === lastScrollTop) {
-                        scroller.scrollTop = scroller.scrollHeight;
-                        clearInterval(intervalId);
-                        done();
-                    }
-                }, scrollInterval);
-            } else {
+            if (!scroller) {
+                console.log('Scroller element not found.');
                 done();
+                return;
             }
+
+            let lastHeight = scroller.scrollHeight;
+            let consecutiveChecks = 0;
+            const requiredStableChecks = 3; // Number of times the height must be stable before we're done
+            const scrollInterval = 100; // Time between scrolls in ms
+            const checkInterval = 500; // Time between height checks in ms
+
+            // Function to scroll to the bottom
+            const scrollToBottom = () => {
+                scroller.scrollTop = scroller.scrollHeight;
+            };
+
+            // Start scrolling
+            const scrollTimer = setInterval(scrollToBottom, scrollInterval);
+
+            // Start checking for height stability
+            const checkTimer = setInterval(() => {
+                let newHeight = scroller.scrollHeight;
+                if (newHeight === lastHeight) {
+                    consecutiveChecks++;
+                    console.log(`Height stable, check ${consecutiveChecks}/${requiredStableChecks}`);
+                    if (consecutiveChecks >= requiredStableChecks) {
+                        console.log('Document appears fully loaded.');
+                        clearInterval(scrollTimer);
+                        clearInterval(checkTimer);
+                        scrollToBottom(); // Final scroll to the very end
+                        // A small delay to allow the final content to render before printing
+                        setTimeout(done, 1000);
+                    }
+                } else {
+                    console.log(`Height changed: ${lastHeight} -> ${newHeight}. Resetting stability check.`);
+                    lastHeight = newHeight;
+                    consecutiveChecks = 0; // Reset counter
+                }
+            }, checkInterval);
         """)
 
         driver.execute_script("document.querySelectorAll('.document_scroller').forEach(el => el.classList.remove('document_scroller'));")
