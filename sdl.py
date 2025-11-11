@@ -55,8 +55,8 @@ def download_document_as_pdf(driver, url):
         driver.execute_async_script("""
             const done = arguments[arguments.length - 1];
 
-            // Remove clutter
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay').forEach(el => el.remove());
+            // Remove clutter & cookie banners
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay, [id*="onetrust"], [class*="cookie"]').forEach(el => el.remove());
             const commentsSection = document.querySelector('.comments_container');
             if (commentsSection) {
                 commentsSection.remove();
