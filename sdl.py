@@ -13,7 +13,7 @@ import io
 
 from pypdf import PdfReader, PdfWriter
 from selenium import webdriver
-from selenium.webdriver.remote.remote_connection import RemoteConnection
+from selenium.webdriver.remote.http import Client
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -32,7 +32,7 @@ def float_with_comma(value):
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{value}' is not a valid floating-point number.")
 
-def setup_driver():
+def setup_driver(timeout=300):
     """Sets up the headless Chrome WebDriver."""
     options = webdriver.ChromeOptions()
     options.add_argument('--headless')
@@ -49,7 +49,9 @@ def setup_driver():
         'printing.print_to_pdf': True,
     })
     service = ChromeService(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(service=service, options=options,
+        client=Client(timeout=timeout)
+    )
 
     stealth(driver,
             languages=["en-US", "en"],
@@ -249,15 +251,12 @@ def main():
     )
     args = parser.parse_args()
 
-    # Set the Selenium remote connection timeout to match the user-specified value
-    RemoteConnection.set_timeout(args.timeout)
-
     if "scribd.com" not in args.url:
         logging.warning("This script is intended for scribd.com URLs. It may not work correctly with other sites.")
 
     embed_url = get_embed_url(args.url)
 
-    driver = setup_driver()
+    driver = setup_driver(args.timeout)
     if driver:
         try:
             download_document_as_pdf(driver, embed_url, args.url, args.crop, args.timeout)
