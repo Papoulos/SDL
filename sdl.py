@@ -66,10 +66,10 @@ def crop_pdf(pdf_data):
     cm_to_points = 72 / 2.54
 
     # Margins to remove, in points
-    margin_top = 1.7 * cm_to_points
-    margin_bottom = 4.5 * cm_to_points
-    margin_left = 1.5 * cm_to_points
-    margin_right = 1.5 * cm_to_points
+    margin_top = 1 * cm_to_points
+    margin_bottom = 3 * cm_to_points
+    margin_left = 1 * cm_to_points
+    margin_right = 1 * cm_to_points
 
     try:
         reader = PdfReader(io.BytesIO(pdf_data))
