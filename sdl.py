@@ -243,6 +243,10 @@ def main():
     driver = setup_driver()
     if driver:
         try:
+            # Set the command executor timeout to match the user-specified value.
+            # This is crucial for long-running scripts on large documents.
+            driver.command_executor.set_timeout(args.timeout)
+
             download_document_as_pdf(driver, embed_url, args.url, args.crop, args.timeout)
         finally:
             logging.info("Closing the browser.")
