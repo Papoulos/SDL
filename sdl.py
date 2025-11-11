@@ -136,14 +136,11 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
         driver.execute_async_script("""
             const done = arguments[arguments.length - 1];
 
-            // Remove clutter
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay').forEach(el => el.remove());
-            const commentsSection = document.querySelector('.comments_container');
-            if (commentsSection) {
-                commentsSection.remove();
-            }
+            // --- Two-Stage Scrolling Process ---
 
-            // --- Simplified Robust Scrolling Logic ---
+            // First, remove clutter
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .comments_container').forEach(el => el.remove());
+
             const scroller = document.querySelector('.document_scroller');
             if (!scroller) {
                 console.log('Scroller element not found.');
@@ -151,32 +148,73 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
                 return;
             }
 
-            let lastHeight = -1;
-            let stableCount = 0;
-            const requiredStableCount = 5; // Require 5 seconds of stability
-            const checkInterval = 1000;   // Check every 1 second
+            // === Stage 1: The Forced Scroll-Through ===
+            // This forces the browser to render the content page by page.
+            const forcedScroll = () => {
+                return new Promise(resolve => {
+                    let lastScrollTop = -1;
+                    const scrollInterval = setInterval(() => {
+                        // Scroll down by one viewport height
+                        scroller.scrollTop += scroller.clientHeight * 0.95;
 
-            const intervalId = setInterval(() => {
-                // Scroll to the bottom
-                scroller.scrollTop = scroller.scrollHeight;
-                const newHeight = scroller.scrollHeight;
+                        // Check if we're at the bottom
+                        // The `+ 2` is a buffer for rounding issues.
+                        if (scroller.scrollTop + scroller.clientHeight + 2 >= scroller.scrollHeight) {
+                            console.log('Forced scroll reached the bottom.');
+                            scroller.scrollTop = scroller.scrollHeight; // Go to the absolute end
+                            clearInterval(scrollInterval);
+                            resolve();
+                        }
 
-                if (newHeight === lastHeight) {
-                    stableCount++;
-                    console.log(`Height stable, check ${stableCount}/${requiredStableCount}`);
-                    if (stableCount >= requiredStableCount) {
-                        clearInterval(intervalId);
-                        console.log('Document appears fully loaded.');
-                        // Final scroll and a brief wait for rendering
-                        scroller.scrollTop = scroller.scrollHeight;
-                        setTimeout(done, 500);
-                    }
-                } else {
-                    lastHeight = newHeight;
-                    stableCount = 0; // Reset counter if height changes
-                    console.log(`Height changed to ${newHeight}. Resetting stability check.`);
-                }
-            }, checkInterval);
+                        // Check if we're stuck (sometimes happens)
+                        if (scroller.scrollTop === lastScrollTop) {
+                           console.log('Forced scroll is stuck, assuming end.');
+                           clearInterval(scrollInterval);
+                           resolve();
+                        }
+                        lastScrollTop = scroller.scrollTop;
+
+                    }, 250); // A slow, steady scroll
+                });
+            };
+
+            // === Stage 2: The Stability Check ===
+            // This ensures any final, slow-loading elements have appeared.
+            const checkStability = () => {
+                return new Promise(resolve => {
+                    let lastHeight = -1;
+                    let stableCount = 0;
+                    const requiredStableCount = 3; // 3 seconds of stability
+                    const checkInterval = 1000;
+
+                    const stabilityTimer = setInterval(() => {
+                        scroller.scrollTop = scroller.scrollHeight; // Keep scrolling to the bottom
+                        const newHeight = scroller.scrollHeight;
+
+                        if (newHeight === lastHeight && newHeight > 0) {
+                            stableCount++;
+                            console.log(`Stability check: ${stableCount}/${requiredStableCount}`);
+                            if (stableCount >= requiredStableCount) {
+                                console.log('Document height is stable. Content fully loaded.');
+                                clearInterval(stabilityTimer);
+                                resolve();
+                            }
+                        } else {
+                            console.log(`Height changed to ${newHeight}. Resetting stability check.`);
+                            lastHeight = newHeight;
+                            stableCount = 0;
+                        }
+                    }, checkInterval);
+                });
+            };
+
+            // === Run the Process ===
+            forcedScroll()
+                .then(checkStability)
+                .then(() => {
+                    console.log('Scrolling process complete.');
+                    setTimeout(done, 1000); // Final brief wait for rendering
+                });
         """)
 
         driver.execute_script("document.querySelectorAll('.document_scroller').forEach(el => el.classList.remove('document_scroller'));")
