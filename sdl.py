@@ -107,13 +107,13 @@ def crop_pdf(pdf_data, crop_margins):
         return pdf_data
 
 
-def download_document_as_pdf(driver, url, original_url, crop_margins=None):
+def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeout=300):
     """Navigates to the URL and saves the document as a PDF."""
     try:
         logging.info(f"Navigating to: {url}")
         driver.get(url)
 
-        WebDriverWait(driver, 120).until(
+        WebDriverWait(driver, timeout).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".document_scroller"))
         )
         logging.info("Document page loaded successfully.")
@@ -129,7 +129,7 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None):
             logging.info("Cookie banner not found or already accepted, proceeding.")
 
         # Set the script timeout to 2 minutes
-        driver.set_script_timeout(120)
+        driver.set_script_timeout(timeout)
 
         # Execute JavaScript to prepare the page for printing
         logging.info("Executing JavaScript to prepare the page...")
@@ -240,6 +240,12 @@ def main():
         metavar=('TOP', 'BOTTOM', 'LEFT', 'RIGHT'),
         help='Crop the PDF by removing margins (in cm). Accepts both "." and "," as decimal separators.'
     )
+    parser.add_argument(
+        '--timeout',
+        type=int,
+        default=300,
+        help='Set the timeout in seconds for long-running operations (default: 300).'
+    )
     args = parser.parse_args()
 
     if "scribd.com" not in args.url:
@@ -250,7 +256,7 @@ def main():
     driver = setup_driver()
     if driver:
         try:
-            download_document_as_pdf(driver, embed_url, args.url, args.crop)
+            download_document_as_pdf(driver, embed_url, args.url, args.crop, args.timeout)
         finally:
             logging.info("Closing the browser.")
             driver.quit()
