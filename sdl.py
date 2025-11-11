@@ -17,6 +17,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium_stealth import stealth
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,11 +29,28 @@ def setup_driver():
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument('accept-language=en-US,en;q=0.9')
+    options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+
     options.add_experimental_option('prefs', {
         'printing.print_to_pdf': True,
     })
     service = ChromeService(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=options)
+    driver = webdriver.Chrome(service=service, options=options)
+
+    stealth(driver,
+            languages=["en-US", "en"],
+            vendor="Google Inc.",
+            platform="Win32",
+            webgl_vendor="Intel Inc.",
+            renderer="Intel Iris OpenGL Engine",
+            fix_hairline=True,
+            )
+
+    return driver
 
 def sanitize_filename(filename):
     """Sanitizes a string to be used as a valid filename."""
@@ -45,7 +63,7 @@ def download_document_as_pdf(driver, url):
         logging.info(f"Navigating to: {url}")
         driver.get(url)
 
-        WebDriverWait(driver, 20).until(
+        WebDriverWait(driver, 120).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".document_scroller"))
         )
         logging.info("Document page loaded successfully.")
@@ -56,7 +74,7 @@ def download_document_as_pdf(driver, url):
             const done = arguments[arguments.length - 1];
 
             // Remove clutter & cookie banners
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay, [id*="onetrust"], [class*="cookie"]').forEach(el => el.remove());
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .osano-cm-window').forEach(el => el.remove());
             const commentsSection = document.querySelector('.comments_container');
             if (commentsSection) {
                 commentsSection.remove();
