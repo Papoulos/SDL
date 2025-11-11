@@ -13,6 +13,7 @@ import io
 
 from pypdf import PdfReader, PdfWriter
 from selenium import webdriver
+from selenium.webdriver.remote.remote_connection import RemoteConnection
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -247,6 +248,9 @@ def main():
         help='Set the timeout in seconds for long-running operations (default: 300).'
     )
     args = parser.parse_args()
+
+    # Set the Selenium remote connection timeout to match the user-specified value
+    RemoteConnection.set_timeout(args.timeout)
 
     if "scribd.com" not in args.url:
         logging.warning("This script is intended for scribd.com URLs. It may not work correctly with other sites.")
