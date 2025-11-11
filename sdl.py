@@ -9,7 +9,9 @@ import time
 import re
 import base64
 import os
+import io
 
+from pypdf import PdfReader, PdfWriter
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -56,6 +58,47 @@ def sanitize_filename(filename):
     """Sanitizes a string to be used as a valid filename."""
     sanitized = re.sub(r'[\\/*?:"<>|]', "", filename)
     return sanitized.replace(' ', '_')
+
+
+def crop_pdf(pdf_data):
+    """Crops the pages of a PDF according to specified margins."""
+    # Conversion factor from cm to points (1 inch = 72 points, 1 inch = 2.54 cm)
+    cm_to_points = 72 / 2.54
+
+    # Margins to remove, in points
+    margin_top = 1.7 * cm_to_points
+    margin_bottom = 4.5 * cm_to_points
+    margin_left = 1.5 * cm_to_points
+    margin_right = 1.5 * cm_to_points
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_data))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            # Adjust the media box to crop the page
+            page.mediabox.lower_left = (
+                page.mediabox.left + margin_left,
+                page.mediabox.bottom + margin_bottom
+            )
+            page.mediabox.upper_right = (
+                page.mediabox.right - margin_right,
+                page.mediabox.top - margin_top
+            )
+            writer.add_page(page)
+
+        # Write the cropped PDF to a byte stream
+        cropped_pdf_stream = io.BytesIO()
+        writer.write(cropped_pdf_stream)
+
+        logging.info("PDF cropped successfully.")
+        return cropped_pdf_stream.getvalue()
+
+    except Exception as e:
+        logging.error(f"Failed to crop PDF: {e}")
+        # Return original data if cropping fails
+        return pdf_data
+
 
 def download_document_as_pdf(driver, url):
     """Navigates to the URL and saves the document as a PDF."""
@@ -124,6 +167,10 @@ def download_document_as_pdf(driver, url):
 
         pdf_data = base64.b64decode(print_to_pdf_result['data'])
 
+        # Crop the PDF
+        logging.info("Cropping the PDF...")
+        cropped_pdf_data = crop_pdf(pdf_data)
+
         # Sanitize title for filename
         title = driver.title
         filename = sanitize_filename(title) + ".pdf"
@@ -133,7 +180,7 @@ def download_document_as_pdf(driver, url):
             filename = "document.pdf"
 
         with open(filename, 'wb') as f:
-            f.write(pdf_data)
+            f.write(cropped_pdf_data)
 
         logging.info(f"Successfully downloaded '{os.path.abspath(filename)}'")
         return True
