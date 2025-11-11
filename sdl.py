@@ -103,25 +103,29 @@ def download_document_as_pdf(driver, url):
         driver.execute_script("document.querySelectorAll('.document_scroller').forEach(el => el.classList.remove('document_scroller'));")
         logging.info("Page preparation complete.")
 
-        # Print page to PDF
-        logging.info("Printing page to PDF...")
-        title = sanitize_filename(driver.title)
-        pdf_filename = title + ".pdf"
-
-        # Use Chrome's print to PDF feature
-        result = driver.execute_cdp_cmd(
+        logging.info("Generating PDF...")
+        print_to_pdf_result = driver.execute_cdp_cmd(
             "Page.printToPDF", {
-                "landscape": False,
                 "printBackground": True,
-                "preferCSSPageSize": True,
-            }
-        )
+                "format": "A4",
+                "landscape": False,
+                "scale": 1
+            })
 
-        with open(pdf_filename, "wb") as f:
-            f.write(base64.b64decode(result['data']))
+        pdf_data = base64.b64decode(print_to_pdf_result['data'])
 
-        logging.info(f"Successfully created PDF: {pdf_filename}")
+        # Sanitize title for filename
+        title = driver.title
+        filename = sanitize_filename(title) + ".pdf"
 
+        # Ensure filename is not empty
+        if not filename.strip() or filename.strip() == ".pdf":
+            filename = "document.pdf"
+
+        with open(filename, 'wb') as f:
+            f.write(pdf_data)
+
+        logging.info(f"Successfully downloaded '{os.path.abspath(filename)}'")
         return True
 
     except TimeoutException:
