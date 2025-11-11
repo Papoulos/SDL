@@ -150,9 +150,12 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
         for page_num in range(1, total_pages + 1):
             logging.info(f"Processing page {page_num}/{total_pages}...")
 
-            # Wait for the current page number to be visible in the indicator
-            wait.until(EC.text_to_be_present_in_element((By.XPATH, page_indicator_xpath), f"{page_num} of {total_pages}"))
-            time.sleep(1) # Extra wait for content to render
+            # Wait for the specific page container to be present in the DOM
+            page_container_selector = f"div#page{page_num}"
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, page_container_selector)))
+
+            # Optional: Add a brief, final wait for the content within the container (e.g., images) to render
+            time.sleep(1.5)
 
             # Generate PDF of the current view
             pdf_result = driver.execute_cdp_cmd("Page.printToPDF", { "printBackground": True, "format": "A4" })
