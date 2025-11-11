@@ -68,13 +68,23 @@ def download_document_as_pdf(driver, url):
         )
         logging.info("Document page loaded successfully.")
 
+        try:
+            logging.info("Attempting to click 'Accept All' on cookie banner...")
+            accept_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".osano-cm-accept-all"))
+            )
+            accept_button.click()
+            logging.info("Successfully clicked 'Accept All'.")
+        except TimeoutException:
+            logging.info("Cookie banner not found or already accepted, proceeding.")
+
         # Execute JavaScript to prepare the page for printing
         logging.info("Executing JavaScript to prepare the page...")
         driver.execute_async_script("""
             const done = arguments[arguments.length - 1];
 
-            // Remove clutter & cookie banners
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .osano-cm-window').forEach(el => el.remove());
+            // Remove clutter
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay').forEach(el => el.remove());
             const commentsSection = document.querySelector('.comments_container');
             if (commentsSection) {
                 commentsSection.remove();
