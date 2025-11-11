@@ -60,16 +60,16 @@ def sanitize_filename(filename):
     return sanitized.replace(' ', '_')
 
 
-def crop_pdf(pdf_data):
+def crop_pdf(pdf_data, crop_margins):
     """Crops the pages of a PDF according to specified margins."""
     # Conversion factor from cm to points (1 inch = 72 points, 1 inch = 2.54 cm)
     cm_to_points = 72 / 2.54
 
     # Margins to remove, in points
-    margin_top = 1 * cm_to_points
-    margin_bottom = 3 * cm_to_points
-    margin_left = 1 * cm_to_points
-    margin_right = 1 * cm_to_points
+    margin_top = crop_margins[0] * cm_to_points
+    margin_bottom = crop_margins[1] * cm_to_points
+    margin_left = crop_margins[2] * cm_to_points
+    margin_right = crop_margins[3] * cm_to_points
 
     try:
         reader = PdfReader(io.BytesIO(pdf_data))
@@ -100,7 +100,7 @@ def crop_pdf(pdf_data):
         return pdf_data
 
 
-def download_document_as_pdf(driver, url):
+def download_document_as_pdf(driver, url, crop_margins=None):
     """Navigates to the URL and saves the document as a PDF."""
     try:
         logging.info(f"Navigating to: {url}")
@@ -167,9 +167,10 @@ def download_document_as_pdf(driver, url):
 
         pdf_data = base64.b64decode(print_to_pdf_result['data'])
 
-        # Crop the PDF
-        logging.info("Cropping the PDF...")
-        cropped_pdf_data = crop_pdf(pdf_data)
+        # Crop the PDF if crop margins are provided
+        if crop_margins:
+            logging.info("Cropping the PDF...")
+            pdf_data = crop_pdf(pdf_data, crop_margins)
 
         # Sanitize title for filename
         title = driver.title
@@ -180,7 +181,7 @@ def download_document_as_pdf(driver, url):
             filename = "document.pdf"
 
         with open(filename, 'wb') as f:
-            f.write(cropped_pdf_data)
+            f.write(pdf_data)
 
         logging.info(f"Successfully downloaded '{os.path.abspath(filename)}'")
         return True
@@ -210,9 +211,16 @@ def main():
     """Parses arguments and orchestrates the download."""
     parser = argparse.ArgumentParser(
         description='A script to download documents from Scribd as PDF files.',
-        epilog='Example: python3 sdl.py "https://www.scribd.com/document/123456789/My-Document"'
+        epilog='Example: python3 sdl.py "https://www.scribd.com/document/123456789/My-Document" --crop 1 3 1 1'
     )
     parser.add_argument('url', help='The URL of the Scribd document to download.')
+    parser.add_argument(
+        '--crop',
+        nargs=4,
+        type=float,
+        metavar=('TOP', 'BOTTOM', 'LEFT', 'RIGHT'),
+        help='Crop the PDF by removing margins (in cm). Provide four values for top, bottom, left, and right.'
+    )
     args = parser.parse_args()
 
     if "scribd.com" not in args.url:
@@ -223,7 +231,7 @@ def main():
     driver = setup_driver()
     if driver:
         try:
-            download_document_as_pdf(driver, embed_url)
+            download_document_as_pdf(driver, embed_url, args.crop)
         finally:
             logging.info("Closing the browser.")
             driver.quit()
