@@ -107,7 +107,7 @@ def crop_pdf(pdf_data, crop_margins):
         return pdf_data
 
 
-def download_document_as_pdf(driver, url, crop_margins=None):
+def download_document_as_pdf(driver, url, original_url, crop_margins=None):
     """Navigates to the URL and saves the document as a PDF."""
     try:
         logging.info(f"Navigating to: {url}")
@@ -180,8 +180,17 @@ def download_document_as_pdf(driver, url, crop_margins=None):
             pdf_data = crop_pdf(pdf_data, crop_margins)
 
         # Sanitize title for filename
-        title = driver.title
-        filename = sanitize_filename(title) + ".pdf"
+        # Extract the last part of the URL to use as a filename
+        filename_from_url = original_url.rstrip('/').split('/')[-1]
+
+        # If the extracted part is just a number (like in '/document/12345'),
+        # fall back to using the document title.
+        if filename_from_url.isdigit():
+            title = driver.title
+            filename = sanitize_filename(title) + ".pdf"
+        else:
+            filename = sanitize_filename(filename_from_url) + ".pdf"
+
 
         # Ensure filename is not empty
         if not filename.strip() or filename.strip() == ".pdf":
@@ -238,7 +247,7 @@ def main():
     driver = setup_driver()
     if driver:
         try:
-            download_document_as_pdf(driver, embed_url, args.crop)
+            download_document_as_pdf(driver, embed_url, args.url, args.crop)
         finally:
             logging.info("Closing the browser.")
             driver.quit()
