@@ -108,148 +108,76 @@ def crop_pdf(pdf_data, crop_margins):
 
 
 def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeout=300):
-    """Navigates to the URL and saves the document as a PDF."""
+    """Navigates to the URL and saves the document as a PDF, page by page."""
     try:
         logging.info(f"Navigating to: {url}")
         driver.get(url)
 
-        WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".document_scroller"))
-        )
-        logging.info("Document page loaded successfully.")
+        wait = WebDriverWait(driver, timeout)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[id^='page']")))
+        logging.info("Document viewer loaded.")
 
         try:
-            logging.info("Attempting to click 'Accept All' on cookie banner...")
             accept_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, ".osano-cm-accept-all"))
             )
             accept_button.click()
-            logging.info("Successfully clicked 'Accept All'.")
+            logging.info("Successfully clicked 'Accept All' on cookie banner.")
+            time.sleep(2)  # Wait for the banner to disappear
         except TimeoutException:
-            logging.info("Cookie banner not found or already accepted, proceeding.")
+            logging.info("Cookie banner not found or already accepted.")
 
-        # Set the script timeout to 2 minutes
-        driver.set_script_timeout(timeout)
-
-        # Execute JavaScript to prepare the page for printing
-        logging.info("Executing JavaScript to prepare the page...")
-        driver.execute_async_script("""
-            const done = arguments[arguments.length - 1];
-
-            // --- Two-Stage Scrolling Process ---
-
-            // First, remove clutter
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .comments_container').forEach(el => el.remove());
-
-            const scroller = document.querySelector('.document_scroller');
-            if (!scroller) {
-                console.log('Scroller element not found.');
-                done();
-                return;
-            }
-
-            // === Stage 1: The Forced Scroll-Through ===
-            // This forces the browser to render the content page by page.
-            const forcedScroll = () => {
-                return new Promise(resolve => {
-                    let lastScrollTop = -1;
-                    const scrollInterval = setInterval(() => {
-                        // Scroll down by one viewport height
-                        scroller.scrollTop += scroller.clientHeight * 0.95;
-
-                        // Check if we're at the bottom
-                        // The `+ 2` is a buffer for rounding issues.
-                        if (scroller.scrollTop + scroller.clientHeight + 2 >= scroller.scrollHeight) {
-                            console.log('Forced scroll reached the bottom.');
-                            scroller.scrollTop = scroller.scrollHeight; // Go to the absolute end
-                            clearInterval(scrollInterval);
-                            resolve();
-                        }
-
-                        // Check if we're stuck (sometimes happens)
-                        if (scroller.scrollTop === lastScrollTop) {
-                           console.log('Forced scroll is stuck, assuming end.');
-                           clearInterval(scrollInterval);
-                           resolve();
-                        }
-                        lastScrollTop = scroller.scrollTop;
-
-                    }, 250); // A slow, steady scroll
-                });
-            };
-
-            // === Stage 2: The Stability Check ===
-            // This ensures any final, slow-loading elements have appeared.
-            const checkStability = () => {
-                return new Promise(resolve => {
-                    let lastHeight = -1;
-                    let stableCount = 0;
-                    const requiredStableCount = 3; // 3 seconds of stability
-                    const checkInterval = 1000;
-
-                    const stabilityTimer = setInterval(() => {
-                        scroller.scrollTop = scroller.scrollHeight; // Keep scrolling to the bottom
-                        const newHeight = scroller.scrollHeight;
-
-                        if (newHeight === lastHeight && newHeight > 0) {
-                            stableCount++;
-                            console.log(`Stability check: ${stableCount}/${requiredStableCount}`);
-                            if (stableCount >= requiredStableCount) {
-                                console.log('Document height is stable. Content fully loaded.');
-                                clearInterval(stabilityTimer);
-                                resolve();
-                            }
-                        } else {
-                            console.log(`Height changed to ${newHeight}. Resetting stability check.`);
-                            lastHeight = newHeight;
-                            stableCount = 0;
-                        }
-                    }, checkInterval);
-                });
-            };
-
-            // === Run the Process ===
-            forcedScroll()
-                .then(checkStability)
-                .then(() => {
-                    console.log('Scrolling process complete.');
-                    setTimeout(done, 1000); // Final brief wait for rendering
-                });
+        # Remove floating elements that might obscure buttons or content
+        driver.execute_script("""
+            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .auto_hiding_header').forEach(el => el.remove());
         """)
 
-        driver.execute_script("document.querySelectorAll('.document_scroller').forEach(el => el.classList.remove('document_scroller'));")
-        logging.info("Page preparation complete.")
+        # Determine total page count
+        page_indicator_xpath = "//div[contains(@class, 'meta')]//p"
+        page_count_element = wait.until(EC.presence_of_element_located((By.XPATH, page_indicator_xpath)))
+        page_count_text = page_count_element.text
+        match = re.search(r'of\s+(\d+)', page_count_text, re.IGNORECASE)
+        if not match:
+            logging.error(f"Could not determine total page count from text: '{page_count_text}'")
+            return False
+        total_pages = int(match.group(1))
+        logging.info(f"Document has {total_pages} pages.")
 
-        logging.info("Generating PDF...")
-        print_to_pdf_result = driver.execute_cdp_cmd(
-            "Page.printToPDF", {
-                "printBackground": True,
-                "format": "A4",
-                "landscape": False,
-                "scale": 1
-            })
+        next_page_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label*='Next']")))
 
-        pdf_data = base64.b64decode(print_to_pdf_result['data'])
+        pdf_page_streams = []
 
-        # Crop the PDF if crop margins are provided
+        for page_num in range(1, total_pages + 1):
+            logging.info(f"Processing page {page_num}/{total_pages}...")
+
+            # Wait for the current page number to be visible in the indicator
+            wait.until(EC.text_to_be_present_in_element((By.XPATH, page_indicator_xpath), f"{page_num} of {total_pages}"))
+            time.sleep(1) # Extra wait for content to render
+
+            # Generate PDF of the current view
+            pdf_result = driver.execute_cdp_cmd("Page.printToPDF", { "printBackground": True, "format": "A4" })
+            pdf_page_streams.append(io.BytesIO(base64.b64decode(pdf_result['data'])))
+
+            if page_num < total_pages:
+                next_page_button.click()
+
+        logging.info("All pages processed. Merging into a single PDF...")
+        writer = PdfWriter()
+        for stream in pdf_page_streams:
+            reader = PdfReader(stream)
+            for page in reader.pages:
+                writer.add_page(page)
+
+        merged_pdf_stream = io.BytesIO()
+        writer.write(merged_pdf_stream)
+        pdf_data = merged_pdf_stream.getvalue()
+
         if crop_margins:
-            logging.info("Cropping the PDF...")
+            logging.info("Cropping the final PDF...")
             pdf_data = crop_pdf(pdf_data, crop_margins)
 
-        # Sanitize title for filename
-        # Extract the last part of the URL to use as a filename
         filename_from_url = original_url.rstrip('/').split('/')[-1]
-
-        # If the extracted part is just a number (like in '/document/12345'),
-        # fall back to using the document title.
-        if filename_from_url.isdigit():
-            title = driver.title
-            filename = sanitize_filename(title) + ".pdf"
-        else:
-            filename = sanitize_filename(filename_from_url) + ".pdf"
-
-
-        # Ensure filename is not empty
+        filename = sanitize_filename(filename_from_url if not filename_from_url.isdigit() else driver.title) + ".pdf"
         if not filename.strip() or filename.strip() == ".pdf":
             filename = "document.pdf"
 
@@ -259,14 +187,11 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
         logging.info(f"Successfully downloaded '{os.path.abspath(filename)}'")
         return True
 
-    except TimeoutException:
-        logging.error("Page load timed out. Please check the URL and your connection.")
-        return False
-    except WebDriverException as e:
-        logging.error(f"A WebDriver error occurred: {e}")
+    except TimeoutException as e:
+        logging.error(f"A timeout occurred during page-by-page processing: {e}")
         return False
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
+        logging.error(f"An unexpected error occurred during page-by-page processing: {e}")
         return False
 
 
@@ -310,9 +235,6 @@ def main():
     driver = setup_driver()
     if driver:
         try:
-            # Set the command executor timeout
-            driver.command_executor.set_timeout(args.timeout)
-
             download_document_as_pdf(driver, embed_url, args.url, args.crop, args.timeout)
         finally:
             logging.info("Closing the browser.")
