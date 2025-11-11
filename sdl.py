@@ -128,6 +128,9 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None):
         except TimeoutException:
             logging.info("Cookie banner not found or already accepted, proceeding.")
 
+        # Set the script timeout to 2 minutes
+        driver.set_script_timeout(120)
+
         # Execute JavaScript to prepare the page for printing
         logging.info("Executing JavaScript to prepare the page...")
         driver.execute_async_script("""
