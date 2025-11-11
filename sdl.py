@@ -143,7 +143,7 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
                 commentsSection.remove();
             }
 
-            // --- Robust Scrolling Logic ---
+            // --- Simplified Robust Scrolling Logic ---
             const scroller = document.querySelector('.document_scroller');
             if (!scroller) {
                 console.log('Scroller element not found.');
@@ -151,38 +151,30 @@ def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeo
                 return;
             }
 
-            let lastHeight = scroller.scrollHeight;
-            let consecutiveChecks = 0;
-            const requiredStableChecks = 3; // Number of times the height must be stable before we're done
-            const scrollInterval = 100; // Time between scrolls in ms
-            const checkInterval = 500; // Time between height checks in ms
+            let lastHeight = -1;
+            let stableCount = 0;
+            const requiredStableCount = 5; // Require 5 seconds of stability
+            const checkInterval = 1000;   // Check every 1 second
 
-            // Function to scroll to the bottom
-            const scrollToBottom = () => {
+            const intervalId = setInterval(() => {
+                // Scroll to the bottom
                 scroller.scrollTop = scroller.scrollHeight;
-            };
+                const newHeight = scroller.scrollHeight;
 
-            // Start scrolling
-            const scrollTimer = setInterval(scrollToBottom, scrollInterval);
-
-            // Start checking for height stability
-            const checkTimer = setInterval(() => {
-                let newHeight = scroller.scrollHeight;
                 if (newHeight === lastHeight) {
-                    consecutiveChecks++;
-                    console.log(`Height stable, check ${consecutiveChecks}/${requiredStableChecks}`);
-                    if (consecutiveChecks >= requiredStableChecks) {
+                    stableCount++;
+                    console.log(`Height stable, check ${stableCount}/${requiredStableCount}`);
+                    if (stableCount >= requiredStableCount) {
+                        clearInterval(intervalId);
                         console.log('Document appears fully loaded.');
-                        clearInterval(scrollTimer);
-                        clearInterval(checkTimer);
-                        scrollToBottom(); // Final scroll to the very end
-                        // A small delay to allow the final content to render before printing
-                        setTimeout(done, 1000);
+                        // Final scroll and a brief wait for rendering
+                        scroller.scrollTop = scroller.scrollHeight;
+                        setTimeout(done, 500);
                     }
                 } else {
-                    console.log(`Height changed: ${lastHeight} -> ${newHeight}. Resetting stability check.`);
                     lastHeight = newHeight;
-                    consecutiveChecks = 0; // Reset counter
+                    stableCount = 0; // Reset counter if height changes
+                    console.log(`Height changed to ${newHeight}. Resetting stability check.`);
                 }
             }, checkInterval);
         """)
