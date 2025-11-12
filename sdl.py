@@ -228,17 +228,32 @@ def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, h
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Un script pour télécharger des documents depuis Scribd en PDF.',
-        epilog='Exemple : python sdl.py "https://www.scribd.com/document/123456789/Mon-Document" mon_document.pdf --crop 1 3 1,5 1.5'
+        description='Télécharge un document depuis Scribd et le convertit en PDF.',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="""
+Exemples d'utilisation:
+  # Téléchargement simple
+  python3 sdl.py "https://www.scribd.com/document/123456/Mon-Doc" sortie.pdf
+
+  # Rognage des marges (1cm en haut, 2cm en bas, 1.5cm à gauche, 1.5cm à droite)
+  # Note: accepte les virgules et les points comme séparateurs décimaux.
+  python3 sdl.py "url_du_document" mon_fichier.pdf --crop 1 2 1,5 1.5
+"""
     )
-    parser.add_argument('url', help='URL du document Scribd à télécharger.')
-    parser.add_argument('output_pdf', help='Chemin du fichier PDF de sortie.')
+    parser.add_argument('url', metavar='URL', help="L'URL du document Scribd à télécharger.")
+    parser.add_argument('output_pdf', metavar='FICHIER_SORTIE', help='Le chemin du fichier PDF de sortie.')
     parser.add_argument(
         '--crop',
         nargs=4,
         type=float_with_comma,
         metavar=('HAUT', 'BAS', 'GAUCHE', 'DROITE'),
-        help='Rogner le PDF en supprimant les marges (en cm). Accepte "." et "," comme séparateurs décimaux.'
+        help="""Rogner le PDF en supprimant les marges (en cm).
+Les quatre valeurs correspondent aux marges à supprimer:
+  HAUT   : marge supérieure
+  BAS    : marge inférieure
+  GAUCHE : marge de gauche
+  DROITE : marge de droite
+Accepte les nombres à virgule (ex: 1,5) ou à point (ex: 2.5)."""
     )
     args = parser.parse_args()
 
