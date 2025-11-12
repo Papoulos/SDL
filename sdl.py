@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-scribd_print_to_pdf.py
+sdl.py
 
 Usage:
-python scribd_print_to_pdf.py "https://www.scribd.com/document/12345678/..." output.pdf
+python sdl.py "https://www.scribd.com/document/12345678/..." output.pdf
 
 Ce script :
 - si l'URL contient '/document/' extrait l'ID numérique et va sur l'URL embed
@@ -13,141 +14,28 @@ https://www.scribd.com/embeds/{id}/content
 - enregistre la page en PDF.
 """
 
-import sys
 import re
 import time
 import argparse
-import io
 from pathlib import Path
-from typing import List, Union
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
-from pypdf import PdfReader, PdfWriter
+from pdf_utils import float_with_comma, crop_pdf, cut_pdf
 
 SCROLL_STEP = 300
 SCROLL_DELAY = 0.016 # ~16ms between steps, imite le JS d'origine
 MAX_SCROLL_ATTEMPTS = 20000 # garde-fou
-
-def float_with_comma(value: str) -> float:
-    """Converts a string with comma or period as decimal separator to float."""
-    try:
-        return float(value.replace(',', '.'))
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not a valid floating-point number.")
-
-def crop_pdf(pdf_data: bytes, crop_margins: List[float]) -> bytes:
-    """Crops the pages of a PDF according to specified margins."""
-    # Conversion factor from cm to points (1 inch = 72 points, 1 inch = 2.54 cm)
-    cm_to_points = 72 / 2.54
-
-    # Margins to remove, in points
-    margin_top = crop_margins[0] * cm_to_points
-    margin_bottom = crop_margins[1] * cm_to_points
-    margin_left = crop_margins[2] * cm_to_points
-    margin_right = crop_margins[3] * cm_to_points
-
-    try:
-        reader = PdfReader(io.BytesIO(pdf_data))
-        writer = PdfWriter()
-
-        for page in reader.pages:
-            # Adjust the media box to crop the page
-            page.mediabox.lower_left = (
-                page.mediabox.left + margin_left,
-                page.mediabox.bottom + margin_bottom
-            )
-            page.mediabox.upper_right = (
-                page.mediabox.right - margin_right,
-                page.mediabox.top - margin_top
-            )
-            writer.add_page(page)
-
-        # Write the cropped PDF to a byte stream
-        cropped_pdf_stream = io.BytesIO()
-        writer.write(cropped_pdf_stream)
-
-        print("[+] PDF rogné avec succès.")
-        return cropped_pdf_stream.getvalue()
-
-    except Exception as e:
-        print(f"[!] Échec du rognage PDF : {e}")
-        # Return original data if cropping fails
-        return pdf_data
-
-def cut_pdf(pdf_data: bytes, pages_to_remove_str: str) -> bytes:
-    """
-    Supprime des pages spécifiques d'un PDF en se basant sur une chaîne de caractères.
-    Exemples pour pages_to_remove_str: '5', '1-3', '1,5,10-12'.
-    """
-    def parse_pages_to_remove(pages_str: str) -> set[int]:
-        """Analyse une chaîne comme '1,3,5-7' en un ensemble de numéros de page."""
-        pages_to_remove = set()
-        if not pages_str:
-            return pages_to_remove
-
-        parts = pages_str.split(',')
-        for part in parts:
-            part = part.strip()
-            if '-' in part:
-                try:
-                    start, end = map(int, part.split('-'))
-                    if start > end:
-                        start, end = end, start # Inverser si l'ordre est incorrect
-                    pages_to_remove.update(range(start, end + 1))
-                except ValueError:
-                    print(f"[!] Avertissement : intervalle de pages invalide ignoré : '{part}'")
-            else:
-                try:
-                    pages_to_remove.add(int(part))
-                except ValueError:
-                    print(f"[!] Avertissement : numéro de page invalide ignoré : '{part}'")
-        return pages_to_remove
-
-    pages_to_cut = parse_pages_to_remove(pages_to_remove_str)
-    if not pages_to_cut:
-        print("[+] Aucune page valide à supprimer spécifiée.")
-        return pdf_data
-
-    try:
-        reader = PdfReader(io.BytesIO(pdf_data))
-        writer = PdfWriter()
-
-        num_pages_original = len(reader.pages)
-        pages_kept_count = 0
-
-        for i, page in enumerate(reader.pages):
-            # Les numéros de page sont 1-indexés pour l'utilisateur
-            page_number = i + 1
-            if page_number not in pages_to_cut:
-                writer.add_page(page)
-                pages_kept_count += 1
-
-        if pages_kept_count == num_pages_original:
-            print("[+] Aucune des pages spécifiées n'a été trouvée dans le document.")
-            return pdf_data
-
-        # Écrire le PDF modifié dans un flux d'octets
-        cut_pdf_stream = io.BytesIO()
-        writer.write(cut_pdf_stream)
-
-        print(f"[+] PDF modifié avec succès. {num_pages_original - pages_kept_count} page(s) supprimée(s).")
-        return cut_pdf_stream.getvalue()
-
-    except Exception as e:
-        print(f"[!] Échec de la suppression de pages : {e}")
-        # Retourner les données originales si la suppression échoue
-        return pdf_data
 
 def get_embed_url(url: str) -> str:
     """Si URL contient /document/, extrait l'ID et retourne l'URL embed, sinon retourne la même URL."""
     m = re.search(r"/document/(\d+)/", url)
     if m:
         number_id = m.group(1)
-        return f"https://www.scribd.com/embeds/{number_id}/content"
+        return "https://www.scribd.com/embeds/{}/content".format(number_id)
     return url
 
-def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, cut_pages_str: str = None, headless: bool = True):
+def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, headless: bool = True):
     embed_url = get_embed_url(url)
-    print(f"[+] Using URL: {embed_url}")
+    print("[+] Using URL: {}".format(embed_url))
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
@@ -218,7 +106,7 @@ def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, c
             try:
                 page.evaluate(scroll_inner_js)
             except Exception as e:
-                print(f"[!] Erreur lors du scroll interne : {e}")
+                print("[!] Erreur lors du scroll interne : {}".format(e))
         else:
             # fallback : scroll la page entière
             print("[+] Fallback : scroll de la fenêtre (window) pour charger le contenu lazy-loaded...")
@@ -243,7 +131,7 @@ def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, c
             try:
                 page.evaluate(scroll_page_js)
             except Exception as e:
-                print(f"[!] Erreur lors du scroll global : {e}")
+                print("[!] Erreur lors du scroll global : {}".format(e))
 
         # Un dernier nettoyage avant impression (retirer overflow:hidden potentiels)
         final_cleanup = """
@@ -286,10 +174,10 @@ def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, c
             with open(out_path, 'wb') as f:
                 f.write(pdf_data)
 
-            print(f"[+] PDF sauvegardé dans : {out_path.resolve()}")
+            print("[+] PDF sauvegardé dans : {}".format(out_path.resolve()))
 
         except Exception as e:
-            print(f"[!] Échec de la génération ou sauvegarde du PDF : {e}")
+            print("[!] Échec de la génération ou sauvegarde du PDF : {}".format(e))
 
         browser.close()
 
@@ -352,7 +240,7 @@ Les pages peuvent être spécifiées individuellement ou par intervalle:
             else:
                 filename_base = "document"  # Final fallback
 
-        output_pdf = f"{filename_base}.pdf"
-        print(f"[+] Nom de fichier non fourni. Utilisation auto : {output_pdf}")
+        output_pdf = "{}.pdf".format(filename_base)
+        print("[+] Nom de fichier non fourni. Utilisation auto : {}".format(output_pdf))
 
     run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, headless=True)
