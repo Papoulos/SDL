@@ -73,6 +73,70 @@ def crop_pdf(pdf_data: bytes, crop_margins: List[float]) -> bytes:
         # Return original data if cropping fails
         return pdf_data
 
+def cut_pdf(pdf_data: bytes, pages_to_remove_str: str) -> bytes:
+    """
+    Supprime des pages spécifiques d'un PDF en se basant sur une chaîne de caractères.
+    Exemples pour pages_to_remove_str: '5', '1-3', '1,5,10-12'.
+    """
+    def parse_pages_to_remove(pages_str: str) -> set[int]:
+        """Analyse une chaîne comme '1,3,5-7' en un ensemble de numéros de page."""
+        pages_to_remove = set()
+        if not pages_str:
+            return pages_to_remove
+
+        parts = pages_str.split(',')
+        for part in parts:
+            part = part.strip()
+            if '-' in part:
+                try:
+                    start, end = map(int, part.split('-'))
+                    if start > end:
+                        start, end = end, start # Inverser si l'ordre est incorrect
+                    pages_to_remove.update(range(start, end + 1))
+                except ValueError:
+                    print(f"[!] Avertissement : intervalle de pages invalide ignoré : '{part}'")
+            else:
+                try:
+                    pages_to_remove.add(int(part))
+                except ValueError:
+                    print(f"[!] Avertissement : numéro de page invalide ignoré : '{part}'")
+        return pages_to_remove
+
+    pages_to_cut = parse_pages_to_remove(pages_to_remove_str)
+    if not pages_to_cut:
+        print("[+] Aucune page valide à supprimer spécifiée.")
+        return pdf_data
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_data))
+        writer = PdfWriter()
+
+        num_pages_original = len(reader.pages)
+        pages_kept_count = 0
+
+        for i, page in enumerate(reader.pages):
+            # Les numéros de page sont 1-indexés pour l'utilisateur
+            page_number = i + 1
+            if page_number not in pages_to_cut:
+                writer.add_page(page)
+                pages_kept_count += 1
+
+        if pages_kept_count == num_pages_original:
+            print("[+] Aucune des pages spécifiées n'a été trouvée dans le document.")
+            return pdf_data
+
+        # Écrire le PDF modifié dans un flux d'octets
+        cut_pdf_stream = io.BytesIO()
+        writer.write(cut_pdf_stream)
+
+        print(f"[+] PDF modifié avec succès. {num_pages_original - pages_kept_count} page(s) supprimée(s).")
+        return cut_pdf_stream.getvalue()
+
+    except Exception as e:
+        print(f"[!] Échec de la suppression de pages : {e}")
+        # Retourner les données originales si la suppression échoue
+        return pdf_data
+
 def get_embed_url(url: str) -> str:
     """Si URL contient /document/, extrait l'ID et retourne l'URL embed, sinon retourne la même URL."""
     m = re.search(r"/document/(\d+)/", url)
@@ -81,7 +145,7 @@ def get_embed_url(url: str) -> str:
         return f"https://www.scribd.com/embeds/{number_id}/content"
     return url
 
-def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, headless: bool = True):
+def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, cut_pages_str: str = None, headless: bool = True):
     embed_url = get_embed_url(url)
     print(f"[+] Using URL: {embed_url}")
 
@@ -213,6 +277,10 @@ def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, h
                 print("[+] Rognage du PDF...")
                 pdf_data = crop_pdf(pdf_data, crop_margins)
 
+            if cut_pages_str:
+                print("[+] Suppression de pages...")
+                pdf_data = cut_pdf(pdf_data, cut_pages_str)
+
             out_path = Path(out_pdf)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             with open(out_path, 'wb') as f:
@@ -233,14 +301,14 @@ if __name__ == "__main__":
         epilog="""
 Exemples d'utilisation:
   # Téléchargement simple avec nom de fichier spécifié
-  python3 sdl.py "https://www.scribd.com/document/123456/Mon-Doc" sortie.pdf
+  python3 clean.py "https://www.scribd.com/document/123456/Mon-Doc" sortie.pdf
 
   # Téléchargement avec nom de fichier automatique (le PDF sera nommé 'Mon-Doc.pdf')
-  python3 sdl.py "https://www.scribd.com/document/123456/Mon-Doc"
+  python3 clean.py "https://www.scribd.com/document/123456/Mon-Doc"
 
   # Rognage des marges (1cm en haut, 2cm en bas, 1.5cm à gauche, 1.5cm à droite)
   # Note: accepte les virgules et les points comme séparateurs décimaux.
-  python3 sdl.py "url_du_document" mon_fichier.pdf --crop 1 2 1,5 1.5
+  python3 clean.py "url_du_document" mon_fichier.pdf --crop 1 2 1,5 1.5
 """
     )
     parser.add_argument('url', metavar='URL', help="L'URL du document Scribd à télécharger.")
@@ -257,6 +325,16 @@ Les quatre valeurs correspondent aux marges à supprimer:
   GAUCHE : marge de gauche
   DROITE : marge de droite
 Accepte les nombres à virgule (ex: 1,5) ou à point (ex: 2.5)."""
+    )
+    parser.add_argument(
+        '--cut',
+        type=str,
+        metavar='PAGES',
+        help="""Supprimer des pages spécifiques du PDF final.
+Les pages peuvent être spécifiées individuellement ou par intervalle:
+  '5'      : supprime la page 5
+  '1-3'    : supprime les pages 1, 2 et 3
+  '1,5,10-12': supprime les pages 1, 5, 10, 11 et 12"""
     )
     args = parser.parse_args()
 
@@ -277,4 +355,4 @@ Accepte les nombres à virgule (ex: 1,5) ou à point (ex: 2.5)."""
         output_pdf = f"{filename_base}.pdf"
         print(f"[+] Nom de fichier non fourni. Utilisation auto : {output_pdf}")
 
-    run(args.url, output_pdf, crop_margins=args.crop, headless=True)
+    run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, headless=True)
