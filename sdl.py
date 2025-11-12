@@ -232,8 +232,11 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""
 Exemples d'utilisation:
-  # Téléchargement simple
+  # Téléchargement simple avec nom de fichier spécifié
   python3 sdl.py "https://www.scribd.com/document/123456/Mon-Doc" sortie.pdf
+
+  # Téléchargement avec nom de fichier automatique (le PDF sera nommé 'Mon-Doc.pdf')
+  python3 sdl.py "https://www.scribd.com/document/123456/Mon-Doc"
 
   # Rognage des marges (1cm en haut, 2cm en bas, 1.5cm à gauche, 1.5cm à droite)
   # Note: accepte les virgules et les points comme séparateurs décimaux.
@@ -241,7 +244,7 @@ Exemples d'utilisation:
 """
     )
     parser.add_argument('url', metavar='URL', help="L'URL du document Scribd à télécharger.")
-    parser.add_argument('output_pdf', metavar='FICHIER_SORTIE', help='Le chemin du fichier PDF de sortie.')
+    parser.add_argument('output_pdf', metavar='FICHIER_SORTIE', nargs='?', default=None, help='Le chemin du fichier PDF de sortie (optionnel).\nSi non fourni, le nom est dérivé du dernier segment de l\'URL.')
     parser.add_argument(
         '--crop',
         nargs=4,
@@ -257,4 +260,21 @@ Accepte les nombres à virgule (ex: 1,5) ou à point (ex: 2.5)."""
     )
     args = parser.parse_args()
 
-    run(args.url, args.output_pdf, crop_margins=args.crop, headless=True)
+    output_pdf = args.output_pdf
+    if output_pdf is None:
+        # Generate filename from URL if not provided
+        url_for_name = args.url.split('?')[0].rstrip('/')
+        filename_base = url_for_name.split('/')[-1]
+
+        # If the name is empty or looks like a domain, fallback
+        if not filename_base or filename_base in ['www.scribd.com', 'scribd.com']:
+            match_id = re.search(r"/document/(\d+)", args.url)
+            if match_id:
+                filename_base = match_id.group(1)  # Use document ID as fallback
+            else:
+                filename_base = "document"  # Final fallback
+
+        output_pdf = f"{filename_base}.pdf"
+        print(f"[+] Nom de fichier non fourni. Utilisation auto : {output_pdf}")
+
+    run(args.url, output_pdf, crop_margins=args.crop, headless=True)
