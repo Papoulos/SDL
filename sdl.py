@@ -1,73 +1,39 @@
+#!/usr/bin/env python3
 """
-A script to download documents from Scribd.com as PDF files.
-This script uses selenium and a headless Chrome browser to render the document
-and then prints it to a PDF file.
+scribd_print_to_pdf.py
+
+Usage:
+python scribd_print_to_pdf.py "https://www.scribd.com/document/12345678/..." output.pdf
+
+Ce script :
+- si l'URL contient '/document/' extrait l'ID numérique et va sur l'URL embed
+https://www.scribd.com/embeds/{id}/content
+- attend le loader, supprime les éléments de "clutter",
+- fait défiler le scroller du document jusqu'en bas (pour forcer le chargement de toutes les pages),
+- enregistre la page en PDF.
 """
-import argparse
-import logging
-import time
+
+import sys
 import re
-import base64
-import os
+import time
+import argparse
 import io
-
+from pathlib import Path
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 from pypdf import PdfReader, PdfWriter
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium_stealth import stealth
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+SCROLL_STEP = 300
+SCROLL_DELAY = 0.016 # ~16ms between steps, imite le JS d'origine
+MAX_SCROLL_ATTEMPTS = 20000 # garde-fou
 
-def float_with_comma(value):
+def float_with_comma(value: str) -> float:
     """Converts a string with comma or period as decimal separator to float."""
     try:
         return float(value.replace(',', '.'))
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{value}' is not a valid floating-point number.")
 
-def setup_driver():
-    """Sets up the headless Chrome WebDriver."""
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('accept-language=en-US,en;q=0.9')
-    options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-
-    options.add_experimental_option('prefs', {
-        'printing.print_to_pdf': True,
-    })
-    service = ChromeService(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-
-    stealth(driver,
-            languages=["en-US", "en"],
-            vendor="Google Inc.",
-            platform="Win32",
-            webgl_vendor="Intel Inc.",
-            renderer="Intel Iris OpenGL Engine",
-            fix_hairline=True,
-            )
-
-    return driver
-
-def sanitize_filename(filename):
-    """Sanitizes a string to be used as a valid filename."""
-    sanitized = re.sub(r'[\\/*?:"<>|]', "", filename)
-    return sanitized.replace(' ', '_')
-
-
-def crop_pdf(pdf_data, crop_margins):
+def crop_pdf(pdf_data: bytes, crop_margins: list[float]) -> bytes:
     """Crops the pages of a PDF according to specified margins."""
     # Conversion factor from cm to points (1 inch = 72 points, 1 inch = 2.54 cm)
     cm_to_points = 72 / 2.54
@@ -98,159 +64,181 @@ def crop_pdf(pdf_data, crop_margins):
         cropped_pdf_stream = io.BytesIO()
         writer.write(cropped_pdf_stream)
 
-        logging.info("PDF cropped successfully.")
+        print("[+] PDF rogné avec succès.")
         return cropped_pdf_stream.getvalue()
 
     except Exception as e:
-        logging.error(f"Failed to crop PDF: {e}")
+        print(f"[!] Échec du rognage PDF : {e}")
         # Return original data if cropping fails
         return pdf_data
 
-
-def download_document_as_pdf(driver, url, original_url, crop_margins=None, timeout=300):
-    """Navigates to the URL and saves the document as a PDF."""
-    try:
-        logging.info(f"Navigating to: {url}")
-        driver.get(url)
-
-        wait = WebDriverWait(driver, timeout)
-        # Use a general locator that indicates the document viewer is ready
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".document_scroller")))
-        logging.info("Document viewer loaded.")
-
-        try:
-            accept_button = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, ".osano-cm-accept-all"))
-            )
-            accept_button.click()
-            logging.info("Successfully clicked 'Accept All' on cookie banner.")
-            time.sleep(2)
-        except TimeoutException:
-            logging.info("Cookie banner not found or already accepted.")
-
-        # Set the script timeout
-        driver.set_script_timeout(timeout)
-
-        # Execute the proven JavaScript to prepare the page
-        logging.info("Executing JavaScript to scroll and clean the page...")
-        driver.execute_async_script("""
-            const done = arguments[arguments.length - 1];
-            const scroller = document.querySelector('.document_scroller');
-
-            if (!scroller) {
-                console.error('Scroller element not found.');
-                done();
-                return;
-            }
-
-            // 1. Remove clutter
-            document.querySelectorAll('.toolbar_drop, .mobile_overlay, .comments_container').forEach(el => el.remove());
-
-            // 2. Scroll to the bottom to load all content
-            new Promise(resolve => {
-                const scrollStep = 300;
-                const scrollInterval = 16;
-                const intervalId = setInterval(() => {
-                    const lastScrollTop = scroller.scrollTop;
-                    scroller.scrollTop += scrollStep;
-
-                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight || scroller.scrollTop === lastScrollTop) {
-                        scroller.scrollTop = scroller.scrollHeight;
-                        clearInterval(intervalId);
-                        setTimeout(resolve, 500); // Wait a bit for final render
-                    }
-                }, scrollInterval);
-            }).then(() => {
-                // 3. Remove the scroller class to prepare for printing
-                scroller.classList.remove('document_scroller');
-                console.log('Page preparation complete.');
-                done();
-            });
-        """)
-        logging.info("Page preparation complete.")
-
-        logging.info("Generating PDF...")
-        print_to_pdf_result = driver.execute_cdp_cmd(
-            "Page.printToPDF", {
-                "printBackground": True,
-                "format": "A4",
-                "landscape": False,
-                "scale": 1
-            })
-
-        pdf_data = base64.b64decode(print_to_pdf_result['data'])
-
-        if crop_margins:
-            logging.info("Cropping the PDF...")
-            pdf_data = crop_pdf(pdf_data, crop_margins)
-
-        filename_from_url = original_url.rstrip('/').split('/')[-1]
-        filename = sanitize_filename(filename_from_url if not filename_from_url.isdigit() else driver.title) + ".pdf"
-        if not filename.strip() or filename.strip() == ".pdf":
-            filename = "document.pdf"
-
-        with open(filename, 'wb') as f:
-            f.write(pdf_data)
-
-        logging.info(f"Successfully downloaded '{os.path.abspath(filename)}'")
-        return True
-
-    except TimeoutException:
-        logging.error("Page load or element search timed out.")
-        return False
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        return False
-
-
-def get_embed_url(url):
-    """Converts a Scribd document URL to its embed equivalent."""
-    if '/document/' in url:
-        match = re.search(r'/(\d+)/', url)
-        if match:
-            document_id = match.group(1)
-            return f"https://www.scribd.com/embeds/{document_id}/content"
+def get_embed_url(url: str) -> str:
+    """Si URL contient /document/, extrait l'ID et retourne l'URL embed, sinon retourne la même URL."""
+    m = re.search(r"/document/(\d+)/", url)
+    if m:
+        number_id = m.group(1)
+        return f"https://www.scribd.com/embeds/{number_id}/content"
     return url
 
+def run(url: str, out_pdf: str, crop_margins: list[float] | None = None, headless: bool = True):
+    embed_url = get_embed_url(url)
+    print(f"[+] Using URL: {embed_url}")
 
-def main():
-    """Parses arguments and orchestrates the download."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(viewport={"width": 1200, "height": 900})
+        page = context.new_page()
+
+        try:
+            print("[+] Navigating...")
+            page.goto(embed_url, timeout=60000) # 60s timeout
+        except PWTimeoutError:
+            print("[!] Timeout lors du chargement — on continue quand même (la page peut être lente).")
+
+        # Gérer la bannière de cookies
+        try:
+            print("[+] Recherche de la bannière de cookies...")
+            accept_button = page.locator('.osano-cm-accept-all')
+            accept_button.click(timeout=5000)
+            print("[+] Bannière de cookies acceptée.")
+            page.wait_for_timeout(1000) # Petite pause pour que le bandeau disparaisse
+        except PWTimeoutError:
+            print("[+] Pas de bannière de cookies trouvée ou déjà acceptée.")
+
+        # Fonction JS : suppression des éléments indésirables
+        cleanup_js = """
+        (() => {
+            try {
+                document.querySelectorAll('.toolbar_drop, .mobile_overlay').forEach(el => el.remove());
+                const commentsSection = document.querySelector('.comments_container');
+                if (commentsSection) commentsSection.remove();
+            } catch (e) { console.warn('cleanup error', e); }
+        })();
+        """
+        page.evaluate(cleanup_js)
+
+        # Attendre que le scroller apparaisse (ou 10s timeout)
+        try:
+            print("[+] Waiting for .document_scroller to appear...")
+            page.wait_for_selector('.document_scroller', timeout=20000)
+        except PWTimeoutError:
+            print("[!] .document_scroller introuvable — on va tenter un scroll global de la page.")
+
+        # Si .document_scroller existe, scroll dedans ; sinon scroll de la page entière
+        has_scroller = page.query_selector('.document_scroller') is not None
+
+        if has_scroller:
+            print("[+] Scrolling inside .document_scroller to force load of all pages...")
+            scroll_inner_js = """
+            (async () => {{
+                const el = document.querySelector('.document_scroller');
+                if (!el) return false;
+                const step = {};
+                const delay = {};
+                let last = -1;
+                let attempts = 0;
+                while ((el.scrollTop + el.clientHeight < el.scrollHeight) && attempts < {}) {{
+                    last = el.scrollTop;
+                    el.scrollTop = Math.min(el.scrollTop + step, el.scrollHeight);
+                    await new Promise(r => setTimeout(r, delay));
+                    attempts++;
+                    if (el.scrollTop === last) break;
+                }}
+                el.scrollTop = el.scrollHeight;
+                await new Promise(r => setTimeout(r, 200)); // laisser le temps de charger
+                document.querySelectorAll('.document_scroller').forEach(x => x.classList.remove('document_scroller'));
+                return true;
+            }})()
+            """.format(SCROLL_STEP, int(SCROLL_DELAY * 1000), MAX_SCROLL_ATTEMPTS)
+            try:
+                page.evaluate(scroll_inner_js)
+            except Exception as e:
+                print(f"[!] Erreur lors du scroll interne : {e}")
+        else:
+            # fallback : scroll la page entière
+            print("[+] Fallback : scroll de la fenêtre (window) pour charger le contenu lazy-loaded...")
+            scroll_page_js = """
+            (async () => {{
+                const step = {};
+                const delay = {};
+                let last = -1;
+                let attempts = 0;
+                while ((window.scrollY + window.innerHeight < document.body.scrollHeight) && attempts < {}) {{
+                    last = window.scrollY;
+                    window.scrollBy(0, step);
+                    await new Promise(r => setTimeout(r, delay));
+                    attempts++;
+                    if (window.scrollY === last) break;
+                }}
+                window.scrollTo(0, document.body.scrollHeight);
+                await new Promise(r => setTimeout(r, 500));
+                return true;
+            }})()
+            """.format(SCROLL_STEP, int(SCROLL_DELAY * 1000), MAX_SCROLL_ATTEMPTS)
+            try:
+                page.evaluate(scroll_page_js)
+            except Exception as e:
+                print(f"[!] Erreur lors du scroll global : {e}")
+
+        # Un dernier nettoyage avant impression (retirer overflow:hidden potentiels)
+        final_cleanup = """
+        (() => {
+            try {
+                document.body.style.overflow = 'visible';
+                document.documentElement.style.overflow = 'visible';
+                document.querySelectorAll('.toolbar_drop, .mobile_overlay').forEach(el => el.remove());
+                document.querySelectorAll('.document_scroller').forEach(el => el.classList.remove('document_scroller'));
+            } catch (e) { console.warn('final cleanup', e); }
+        })();
+        """
+        page.evaluate(final_cleanup)
+
+        # Attendre quelques instants pour s'assurer que tout est chargé
+        print("[+] Attente finale pour le chargement des pages...")
+        time.sleep(1.0 + 0.01 * SCROLL_STEP)
+
+        # Génération PDF
+        print("[+] Génération du PDF en mémoire...")
+        try:
+            pdf_data = page.pdf(
+                format="A4",
+                print_background=True,
+                prefer_css_page_size=True,
+                margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
+            )
+            print("[+] PDF généré avec succès en mémoire.")
+
+            if crop_margins:
+                print("[+] Rognage du PDF...")
+                pdf_data = crop_pdf(pdf_data, crop_margins)
+
+            out_path = Path(out_pdf)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, 'wb') as f:
+                f.write(pdf_data)
+
+            print(f"[+] PDF sauvegardé dans : {out_path.resolve()}")
+
+        except Exception as e:
+            print(f"[!] Échec de la génération ou sauvegarde du PDF : {e}")
+
+        browser.close()
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='A script to download documents from Scribd as PDF files.',
-        epilog='Example: python3 sdl.py "https://www.scribd.com/document/123456789/My-Document" --crop 1 3 1,5 1.5'
+        description='Un script pour télécharger des documents depuis Scribd en PDF.',
+        epilog='Exemple : python sdl.py "https://www.scribd.com/document/123456789/Mon-Document" mon_document.pdf --crop 1 3 1,5 1.5'
     )
-    parser.add_argument('url', help='The URL of the Scribd document to download.')
+    parser.add_argument('url', help='URL du document Scribd à télécharger.')
+    parser.add_argument('output_pdf', help='Chemin du fichier PDF de sortie.')
     parser.add_argument(
         '--crop',
         nargs=4,
         type=float_with_comma,
-        metavar=('TOP', 'BOTTOM', 'LEFT', 'RIGHT'),
-        help='Crop the PDF by removing margins (in cm). Accepts both "." and "," as decimal separators.'
-    )
-    parser.add_argument(
-        '--timeout',
-        type=int,
-        default=300,
-        help='Set the timeout in seconds for long-running operations (default: 300).'
+        metavar=('HAUT', 'BAS', 'GAUCHE', 'DROITE'),
+        help='Rogner le PDF en supprimant les marges (en cm). Accepte "." et "," comme séparateurs décimaux.'
     )
     args = parser.parse_args()
 
-    if "scribd.com" not in args.url:
-        logging.warning("This script is intended for scribd.com URLs. It may not work correctly with other sites.")
-
-    embed_url = get_embed_url(args.url)
-
-    driver = setup_driver()
-    if driver:
-        try:
-            # Set the command executor timeout to match the user-specified value.
-            # This is crucial for long-running scripts on large documents.
-            driver.command_executor.set_timeout(args.timeout)
-
-            download_document_as_pdf(driver, embed_url, args.url, args.crop, args.timeout)
-        finally:
-            logging.info("Closing the browser.")
-            driver.quit()
-
-if __name__ == '__main__':
-    main()
+    run(args.url, args.output_pdf, crop_margins=args.crop, headless=True)
