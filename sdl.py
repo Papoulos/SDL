@@ -19,6 +19,7 @@ import time
 import argparse
 import io
 from pathlib import Path
+from typing import List, Union
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 from pypdf import PdfReader, PdfWriter
 
@@ -33,7 +34,7 @@ def float_with_comma(value: str) -> float:
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{value}' is not a valid floating-point number.")
 
-def crop_pdf(pdf_data: bytes, crop_margins: list[float]) -> bytes:
+def crop_pdf(pdf_data: bytes, crop_margins: List[float]) -> bytes:
     """Crops the pages of a PDF according to specified margins."""
     # Conversion factor from cm to points (1 inch = 72 points, 1 inch = 2.54 cm)
     cm_to_points = 72 / 2.54
@@ -80,7 +81,7 @@ def get_embed_url(url: str) -> str:
         return f"https://www.scribd.com/embeds/{number_id}/content"
     return url
 
-def run(url: str, out_pdf: str, crop_margins: list[float] | None = None, headless: bool = True):
+def run(url: str, out_pdf: str, crop_margins: Union[List[float], None] = None, headless: bool = True):
     embed_url = get_embed_url(url)
     print(f"[+] Using URL: {embed_url}")
 
