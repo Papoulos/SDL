@@ -163,7 +163,6 @@ def main():
             # pour compenser l'épaisseur du papier. Il est nul pour la feuille extérieure
             # et maximal pour la feuille centrale.
             nombre_feuilles = taille_carnet_courant / 4
-            nombre_feuilles = taille_carnet_courant / 4
             # La "profondeur" de la feuille dans le carnet (0 pour l'extérieure, augmente vers le centre)
             profondeur = min(j, nombre_feuilles - 1 - j)
             # Le creep_offset est proportionnel à la profondeur.
@@ -182,10 +181,12 @@ def main():
             offset_gauche = -gutter_offset - creep_offset
             offset_droite = gutter_offset + creep_offset
 
-            placer_page(page_recto, page_droite_recto, final_pdf, A5_PORTRAIT_SIZE[0] + offset_droite, 0, scale)
+            # Ordre corrigé : placer la page de gauche AVANT la page de droite
             placer_page(page_recto, page_gauche_recto, final_pdf, offset_gauche, 0, scale)
-            placer_page(page_verso, page_droite_verso, final_pdf, A5_PORTRAIT_SIZE[0] + offset_droite, 0, scale)
+            placer_page(page_recto, page_droite_recto, final_pdf, A5_PORTRAIT_SIZE[0] + offset_droite, 0, scale)
+
             placer_page(page_verso, page_gauche_verso, final_pdf, offset_gauche, 0, scale)
+            placer_page(page_verso, page_droite_verso, final_pdf, A5_PORTRAIT_SIZE[0] + offset_droite, 0, scale)
 
         processed_pages += taille_carnet_courant
 
