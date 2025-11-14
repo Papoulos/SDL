@@ -302,20 +302,25 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
 def parse_args():
     parser = argparse.ArgumentParser(description="Générer un livret (booklet) prêt à imprimer.")
     parser.add_argument("input", help="PDF d'entrée (source A4 attendu)")
-    parser.add_argument("output", help="PDF de sortie (booklet)")
+    parser.add_argument("output", nargs="?", help="PDF de sortie (booklet). Si absent → '<source> - Booklet.pdf'")
     parser.add_argument("--signature", type=int, default=16, help="Pages par carnet (multiple de 4). Default 16")
     parser.add_argument("--paper", type=str, default="A4", help="Paper target A4 or Letter. Default A4")
     parser.add_argument("--gutter", type=float, default=0.0, help="Gutter (pliure) en mm. Default 0")
-    parser.add_argument("--pad", type=str, choices=["blank", "last"], default="blank", help="Comment padder le dernier carnet. Default blank")
-    parser.add_argument("--overlap-mm", type=float, default=0.2, help="Micro-chevauchement central en mm (pour éliminer ligne blanche). Default 0.2")
+    parser.add_argument("--pad", type=str, choices=["blank", "last"], default="blank", help="Pad du dernier carnet. Default blank")
+    parser.add_argument("--overlap-mm", type=float, default=0.2, help="Micro-chevauchement en mm. Default 0.2")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("--debug-rects", action="store_true", help="Dessine les rectangles cible/placé (utile pour debug).")
+    parser.add_argument("--debug-rects", action="store_true", help="Dessine les rectangles cible/placé (debug)")
     return parser.parse_args()
+
 
 if __name__ == "__main__":
     args = parse_args()
     inp = Path(args.input)
-    outp = Path(args.output)
+    # Déterminer automatiquement le nom de sortie si absent
+    if args.output is None:
+        outp = inp.with_name(f"{inp.stem} - Booklet.pdf")
+    else:
+        outp = Path(args.output)
 
     if not inp.exists():
         print("Fichier d'entrée introuvable :", inp)
