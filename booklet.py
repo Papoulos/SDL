@@ -1,202 +1,341 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 booklet.py
 
-Un outil d'imposition pour créer des carnets pliés à partir d'un fichier PDF.
-"""
+Génère un livret (booklet) prêt à l'impression en mode "pliure".
+- Par défaut : signature = 16 (4 feuilles), paper = A4, gutter = 0 mm, margin = 0 mm, overlap = 0.2 mm
+- Chaque page source est scalée au maximum dans la demi-feuille disponible en conservant le ratio.
 
+Usage:
+    python booklet.py input.pdf output_booklet.pdf [--signature 16] [--paper A4] [--gutter 0]
+        [--pad blank|last] [--overlap-mm 0.2] [--verbose] [--debug-rects]
+
+Dependencies:
+    pip install pymupdf
+"""
+from pathlib import Path
 import argparse
 import sys
-import math
-import pikepdf
-from pikepdf import Rectangle
 
-def taille_carnet_type(value):
-    """Vérifie que la taille du carnet est un entier multiple de 4."""
-    try:
-        ivalue = int(value)
-        if ivalue <= 0 or ivalue % 4 != 0:
-            raise argparse.ArgumentTypeError(
-                "la valeur doit être un entier positif multiple de 4."
-            )
-        return ivalue
-    except ValueError:
-        raise argparse.ArgumentTypeError("la valeur doit être un entier.")
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    print("PyMuPDF (fitz) requis. Installer: pip install pymupdf")
+    raise
 
-def placer_page(page_cible, page_source, pdf_dest, tx, ty, scale):
+# Points conversion
+MM_TO_PT = 72.0 / 25.4
+
+def mm_to_pt(mm: float) -> float:
+    return mm * MM_TO_PT
+
+# Paper sizes (portrait) in points
+A4_WIDTH_PT = 595.276
+A4_HEIGHT_PT = 841.89
+
+LETTER_WIDTH_PT = 612.0
+LETTER_HEIGHT_PT = 792.0
+
+# ---------------- utilities ----------------
+
+def smallest_multiple_of_4_ge(n: int) -> int:
+    if n <= 0:
+        return 0
+    return ((n + 3) // 4) * 4
+
+def make_blank_page(width_pt, height_pt):
+    tmp = fitz.open()
+    tmp.new_page(width=width_pt, height=height_pt)
+    return tmp
+
+# ---------------- geometry / scaling ----------------
+
+def compute_embed_rects(page_width: float, page_height: float, gutter_pt: float, margin_tlbr, overlap_pt: float = 0.0):
     """
-    Place une page source sur une page cible en ajoutant un nouveau flux de contenu
-    avec les transformations (échelle, translation) nécessaires.
+    Retourne deux fitz.Rect (left, right) pour placer 2 A5 sur une page landscape.
+    Si gutter_pt == 0, on applique overlap_pt (points) en élargissant/chevauchant les moitiés.
     """
-    form_xobject = page_source.as_form_xobject()
-    resource_name = page_cible.add_resource(form_xobject, '/XObject')
+    top, leftm, bottom, rightm = margin_tlbr
+    inner_width = page_width - leftm - rightm
+    inner_height = page_height - top - bottom
 
-    matrix = pikepdf.Matrix().scaled(scale, scale).translated(tx, ty)
-    matrix_str = f'{matrix.a:.4f} {matrix.b:.4f} {matrix.c:.4f} {matrix.d:.4f} {matrix.e:.4f} {matrix.f:.4f}'
+    half_w = inner_width / 2.0
 
-    command = b"q\n%b cm\n%b Do\nQ\n" % (
-        matrix_str.encode('ascii'),
-        bytes(resource_name)
-    )
+    if gutter_pt == 0:
+        # Étendre légèrement les moitiés pour chevauchement symétrique
+        left_x0 = leftm
+        left_x1 = leftm + half_w + (overlap_pt / 2.0)
+        right_x0 = leftm + half_w - (overlap_pt / 2.0)
+        right_x1 = leftm + 2 * half_w
+        y0 = top
+        y1 = top + inner_height
+        rect_left = fitz.Rect(left_x0, y0, left_x1, y1)
+        rect_right = fitz.Rect(right_x0, y0, right_x1, y1)
+        return rect_left, rect_right
 
-    new_stream = pikepdf.Stream(pdf_dest, data=command)
+    # gutter > 0: séparer par offset
+    offset = gutter_pt / 2.0
+    left_x0 = leftm - offset
+    left_x1 = leftm + half_w - offset
+    right_x0 = leftm + half_w + offset
+    right_x1 = leftm + 2 * half_w + offset
 
-    if pikepdf.Name.Contents not in page_cible:
-        page_cible.Contents = new_stream
-    else:
-        existing_contents = page_cible.Contents
-        if isinstance(existing_contents, pikepdf.Array):
-            existing_contents.append(new_stream)
+    # possibilité d'un overlap réduit même avec gutter
+    if overlap_pt > 0:
+        left_x1 += overlap_pt / 2.0
+        right_x0 -= overlap_pt / 2.0
+
+    y0 = top
+    y1 = top + inner_height
+    rect_left = fitz.Rect(left_x0, y0, left_x1, y1)
+    rect_right = fitz.Rect(right_x0, y0, right_x1, y1)
+    return rect_left, rect_right
+
+def fit_src_rect_into_target(target_rect: fitz.Rect, src_rect: fitz.Rect):
+    """
+    Retourne un fitz.Rect placé à l'intérieur de target_rect qui contient la page source
+    mise à l'échelle uniformément au maximum tout en conservant l'aspect ratio.
+    On centre le résultat dans target_rect.
+    """
+    target_w = target_rect.width
+    target_h = target_rect.height
+    src_w = src_rect.width
+    src_h = src_rect.height
+
+    if src_w <= 0 or src_h <= 0:
+        # valeur par défaut: remplir complètement le target
+        return target_rect
+
+    scale = min(target_w / src_w, target_h / src_h)
+
+    new_w = src_w * scale
+    new_h = src_h * scale
+
+    # centre dans target_rect
+    x0 = target_rect.x0 + (target_w - new_w) / 2.0
+    y0 = target_rect.y0 + (target_h - new_h) / 2.0
+    x1 = x0 + new_w
+    y1 = y0 + new_h
+
+    return fitz.Rect(x0, y0, x1, y1)
+
+# ---------------- booklet splitting & imposition ----------------
+
+def split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode="blank"):
+    out = []
+    total = len(pages)
+    idx = 0
+    while idx + signature <= total:
+        out.append(pages[idx:idx + signature])
+        idx += signature
+
+    rem = total - idx
+    if rem > 0:
+        last_sig = smallest_multiple_of_4_ge(rem)
+        chunk = pages[idx: idx + rem]
+        if pad_mode == "blank":
+            for _ in range(last_sig - rem):
+                chunk.append((blank_doc, 0))
+        elif pad_mode == "last":
+            last = chunk[-1]
+            for _ in range(last_sig - rem):
+                chunk.append(last)
         else:
-            page_cible.Contents = pikepdf.Array([existing_contents, new_stream])
+            for _ in range(last_sig - rem):
+                chunk.append((blank_doc, 0))
+        out.append(chunk)
+    return out
 
-def main():
-    """Fonction principale du script."""
-    parser = argparse.ArgumentParser(
-        description="Crée un PDF imposé pour l'impression de carnets.",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
+def imposation_for_signature(signature):
+    if signature % 4 != 0:
+        raise ValueError("signature must be multiple of 4")
+    N = signature
+    sheets = []
+    sheets_count = N // 4
+    for i in range(sheets_count):
+        left_recto = N - 2 * i
+        right_recto = 1 + 2 * i
+        left_verso = 2 + 2 * i
+        right_verso = N - 1 - 2 * i
+        sheets.append((left_recto, right_recto, left_verso, right_verso))
+    return sheets
 
-    parser.add_argument("fichier_entree", help="Le chemin vers le PDF source.")
-    parser.add_argument("fichier_sortie", help="Le chemin vers le PDF final qui sera créé.")
-    parser.add_argument("--taille-carnet", type=taille_carnet_type, default=16, help="Nombre de pages par carnet (doit être un multiple de 4).\nDéfaut : 16")
-    parser.add_argument("--format-source", choices=["A4", "A5"], default="A5", help="Format des pages sources.\nA4: Implique une réduction A4 -> A5.\nA5: Imposition directe.\nDéfaut : A5")
-    parser.add_argument("--gutter", type=float, default=0, help="Espace central total (en mm) pour la pliure.\nDéfaut : 0")
-    parser.add_argument("--creep", type=float, default=0, help="Compensation (en mm) de la poussée (chasse de papier).\nDéfaut : 0")
+# ---------------- main create function ----------------
 
-    args = parser.parse_args()
+def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter_mm=0.0,
+                       pad_mode="blank", overlap_mm=0.2, verbose=False, debug_rects=False):
+    in_doc = fitz.open(input_path)
+    if in_doc.needs_pass:
+        raise RuntimeError("Le PDF d'entrée est protégé / chiffré. Impossible de poursuivre.")
 
-    print("--- Paramètres d'imposition ---")
-    print(u"Fichier d'entrée : {}".format(args.fichier_entree))
-    print(u"Fichier de sortie : {}".format(args.fichier_sortie))
-    print(u"Taille des carnets : {} pages".format(args.taille_carnet))
-    print(u"Format source : {}".format(args.format_source))
-    print(u"Gouttière (gutter) : {} mm".format(args.gutter))
-    print(u"Compensation (creep) : {} mm".format(args.creep))
-    print("-------------------------------")
+    # paper sizes
+    if paper.upper() == "A4":
+        portrait_w = A4_WIDTH_PT
+        portrait_h = A4_HEIGHT_PT
+    elif paper.upper() in ("LETTER", "USLETTER", "LETTER-8.5X11"):
+        portrait_w = LETTER_WIDTH_PT
+        portrait_h = LETTER_HEIGHT_PT
+    else:
+        raise ValueError("Paper only A4 or Letter supported for now")
 
-    try:
-        source_pdf = pikepdf.open(args.fichier_entree)
-    except FileNotFoundError:
-        print(u"Erreur : Le fichier d'entrée '{}' n'a pas été trouvé.".format(args.fichier_entree))
-        sys.exit(1)
-    except pikepdf.PdfError as e:
-        print(u"Erreur à l'ouverture du PDF '{}': {}".format(args.fichier_entree, e))
-        sys.exit(1)
+    landscape_w = portrait_h
+    landscape_h = portrait_w
 
-    num_pages = len(source_pdf.pages)
-    print(u"Nombre de pages initial : {}".format(num_pages))
+    if verbose:
+        print(f"[+] Input pages: {len(in_doc)}")
+        print(f"[+] Target paper: {paper} landscape {landscape_w:.1f} x {landscape_h:.1f} pts")
 
-    # 1. Rembourrage (Padding) pour atteindre un multiple de 4
-    if num_pages == 0:
-        print("Le PDF d'entrée est vide. Rien à faire.")
-        sys.exit(0)
+    pages = [(in_doc, pno) for pno in range(len(in_doc))]
+    blank_doc = make_blank_page(portrait_w, portrait_h)
 
-    pages_to_add = 0
-    if num_pages % 4 != 0:
-        pages_to_add = 4 - (num_pages % 4)
+    booklets = split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode=pad_mode)
+    if verbose:
+        print(f"[+] Booklets: {len(booklets)} sizes: {[len(b) for b in booklets]}")
 
-    if pages_to_add > 0:
-        print(u"Ajout de {} pages blanches avant la dernière page pour atteindre un multiple de 4.".format(pages_to_add))
+    out_doc = fitz.open()
+    gutter_pt = mm_to_pt(gutter_mm)
+    overlap_pt = mm_to_pt(overlap_mm)
 
-        last_page_content = source_pdf.pages[-1]
-        page_box = last_page_content.mediabox
-        page_size = (page_box[2] - page_box[0], page_box[3] - page_box[1])
+    # default margins 0 as requested
+    margin_mm = 0.0
+    margin_pts = (mm_to_pt(margin_mm), mm_to_pt(margin_mm), mm_to_pt(margin_mm), mm_to_pt(margin_mm))
 
-        # Supprimer la dernière page temporairement
-        del source_pdf.pages[-1]
+    if verbose and len(pages) > 0:
+        try:
+            sample_doc, sample_pno = pages[0]
+            sample_rect = sample_doc[sample_pno].rect
+            print(f"[DEBUG] sample source rect: {sample_rect} (w={sample_rect.width:.2f} h={sample_rect.height:.2f})")
+        except Exception:
+            pass
 
-        # Ajouter les pages blanches
-        for _ in range(pages_to_add):
-            source_pdf.add_blank_page(page_size=page_size)
+    booklet_idx = 0
+    for booklet in booklets:
+        booklet_idx += 1
+        sig_here = len(booklet)
+        if verbose:
+            print(f"[+] Processing booklet {booklet_idx}/{len(booklets)} (signature={sig_here})")
 
-        # Rajouter la dernière page à la fin
-        source_pdf.pages.append(last_page_content)
+        sheets_pattern = imposation_for_signature(sig_here)
 
-        print(u"Nombre de pages après ajout : {}".format(len(source_pdf.pages)))
+        for sheet in sheets_pattern:
+            lr, rr, lv, rv = sheet
+            lr_i = lr - 1
+            rr_i = rr - 1
+            lv_i = lv - 1
+            rv_i = rv - 1
 
-    # 2. Imposition
-    print("Début de l'imposition...")
-    final_pdf = pikepdf.new()
+            rect_left, rect_right = compute_embed_rects(landscape_w, landscape_h, gutter_pt, margin_pts, overlap_pt=overlap_pt)
 
-    mm_to_pt = 72 / 25.4
-    A4_PAYSAGE_SIZE = (297 * mm_to_pt, 210 * mm_to_pt)
-    A5_PORTRAIT_SIZE = (148 * mm_to_pt, 210 * mm_to_pt)
-    A4_PORTRAIT_SIZE = (210 * mm_to_pt, 297 * mm_to_pt)
+            if verbose:
+                print(f"[DEBUG] rect_left: {rect_left} rect_right: {rect_right} (gutter_mm={gutter_mm} overlap_mm={overlap_mm})")
 
-    scale = A5_PORTRAIT_SIZE[0] / A4_PORTRAIT_SIZE[0] if args.format_source == 'A4' else 1.0
+            # --- Recto ---
+            page_recto = out_doc.new_page(width=landscape_w, height=landscape_h)
 
-    taille_carnet_max = args.taille_carnet
+            # left recto placement with scaling
+            sdoc, spno = booklet[lr_i]
+            try:
+                src_rect = sdoc[spno].rect
+                target_rect = rect_left
+                placed_rect = fit_src_rect_into_target(target_rect, src_rect)
+                if debug_rects:
+                    page_recto.draw_rect(target_rect, color=(0,0,0), width=0.4)  # target border
+                    page_recto.draw_rect(placed_rect, color=(1,0,0), width=0.6)   # placed content border
+                page_recto.show_pdf_page(placed_rect, sdoc, spno)
+            except Exception as e:
+                if verbose:
+                    print(f"[!] Warning inserting recto-left: {e}")
 
-    processed_pages = 0
-    carnet_num = 0
-    while processed_pages < len(source_pdf.pages):
-        carnet_num += 1
+            # right recto placement with scaling
+            sdoc, spno = booklet[rr_i]
+            try:
+                src_rect = sdoc[spno].rect
+                target_rect = rect_right
+                placed_rect = fit_src_rect_into_target(target_rect, src_rect)
+                if debug_rects:
+                    page_recto.draw_rect(target_rect, color=(0,0,0), width=0.4)
+                    page_recto.draw_rect(placed_rect, color=(0,0,1), width=0.6)
+                page_recto.show_pdf_page(placed_rect, sdoc, spno)
+            except Exception as e:
+                if verbose:
+                    print(f"[!] Warning inserting recto-right: {e}")
 
-        start_idx = processed_pages
-        # Détermine la taille du carnet courant (peut être plus petit pour le dernier)
-        taille_carnet_courant = min(taille_carnet_max, len(source_pdf.pages) - start_idx)
+            # --- Verso ---
+            page_verso = out_doc.new_page(width=landscape_w, height=landscape_h)
 
-        print(u"Traitement du carnet {} ({} pages)...".format(carnet_num, taille_carnet_courant))
+            sdoc, spno = booklet[lv_i]
+            try:
+                src_rect = sdoc[spno].rect
+                target_rect = rect_left
+                placed_rect = fit_src_rect_into_target(target_rect, src_rect)
+                if debug_rects:
+                    page_verso.draw_rect(target_rect, color=(0,0,0), width=0.4)
+                    page_verso.draw_rect(placed_rect, color=(1,0,0), width=0.6)
+                page_verso.show_pdf_page(placed_rect, sdoc, spno)
+            except Exception as e:
+                if verbose:
+                    print(f"[!] Warning inserting verso-left: {e}")
 
-        carnet_pages = source_pdf.pages[start_idx : start_idx + taille_carnet_courant]
+            sdoc, spno = booklet[rv_i]
+            try:
+                src_rect = sdoc[spno].rect
+                target_rect = rect_right
+                placed_rect = fit_src_rect_into_target(target_rect, src_rect)
+                if debug_rects:
+                    page_verso.draw_rect(target_rect, color=(0,0,0), width=0.4)
+                    page_verso.draw_rect(placed_rect, color=(0,0,1), width=0.6)
+                page_verso.show_pdf_page(placed_rect, sdoc, spno)
+            except Exception as e:
+                if verbose:
+                    print(f"[!] Warning inserting verso-right: {e}")
 
-        for j in range(taille_carnet_courant // 4):
-            p_droite_recto_idx = 2 * j
-            p_gauche_verso_idx = p_droite_recto_idx + 1
-            p_droite_verso_idx = (taille_carnet_courant - 1) - (2 * j) - 1
-            p_gauche_recto_idx = p_droite_verso_idx + 1
+    out_doc.save(output_path)
+    out_doc.close()
+    in_doc.close()
+    blank_doc.close()
+    if verbose:
+        print(f"[+] Booklet saved to: {output_path}")
 
-            page_gauche_recto = carnet_pages[p_gauche_recto_idx]
-            page_droite_recto = carnet_pages[p_droite_recto_idx]
-            page_gauche_verso = carnet_pages[p_gauche_verso_idx]
-            page_droite_verso = carnet_pages[p_droite_verso_idx]
+# ---------------- CLI ----------------
 
-            # --- Calcul des décalages (Gutter & Creep) ---
-
-            # Gutter: pousse le contenu vers l'extérieur pour la reliure
-            gutter_offset = args.gutter * mm_to_pt / 2
-
-            # Creep: pousse les pages intérieures plus vers l'extérieur que les extérieures
-            # pour compenser l'épaisseur du papier. Il est nul pour la feuille extérieure
-            # et maximal pour la feuille centrale.
-            nombre_feuilles = taille_carnet_courant / 4
-            # La "profondeur" de la feuille dans le carnet (0 pour l'extérieure, augmente vers le centre)
-            profondeur = min(j, nombre_feuilles - 1 - j)
-            # Le creep_offset est proportionnel à la profondeur.
-            # On normalise par la profondeur maximale possible pour une linéarité parfaite.
-            profondeur_max = math.floor((nombre_feuilles - 1) / 2)
-            max_creep_par_page = args.creep * mm_to_pt / 2
-            creep_offset = (profondeur / profondeur_max) * max_creep_par_page if profondeur_max > 0 else 0
-
-            page_recto = final_pdf.add_blank_page(page_size=A4_PAYSAGE_SIZE)
-            page_verso = final_pdf.add_blank_page(page_size=A4_PAYSAGE_SIZE)
-
-            # Le décalage total est la somme des deux effets.
-            # Gutter: pousse vers l'extérieur. Gauche -> négatif, Droite -> positif
-            # Creep: pousse vers l'extérieur. Gauche -> négatif, Droite -> positif
-
-            offset_gauche = -gutter_offset - creep_offset
-            offset_droite = gutter_offset + creep_offset
-
-            # Ordre corrigé : placer la page de gauche AVANT la page de droite
-            placer_page(page_recto, page_gauche_recto, final_pdf, offset_gauche, 0, scale)
-            placer_page(page_recto, page_droite_recto, final_pdf, A5_PORTRAIT_SIZE[0] + offset_droite, 0, scale)
-
-            placer_page(page_verso, page_gauche_verso, final_pdf, offset_gauche, 0, scale)
-            placer_page(page_verso, page_droite_verso, final_pdf, A5_PORTRAIT_SIZE[0] + offset_droite, 0, scale)
-
-        processed_pages += taille_carnet_courant
-
-    try:
-        final_pdf.save(args.fichier_sortie)
-        print(u"Imposition terminée avec succès.")
-        print(u"Fichier de sortie créé : {}".format(args.fichier_sortie))
-    except Exception as e:
-        print(u"Erreur lors de la sauvegarde du fichier de sortie : {}".format(e))
-        sys.exit(1)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Générer un livret (booklet) prêt à imprimer.")
+    parser.add_argument("input", help="PDF d'entrée (source A4 attendu)")
+    parser.add_argument("output", help="PDF de sortie (booklet)")
+    parser.add_argument("--signature", type=int, default=16, help="Pages par carnet (multiple de 4). Default 16")
+    parser.add_argument("--paper", type=str, default="A4", help="Paper target A4 or Letter. Default A4")
+    parser.add_argument("--gutter", type=float, default=0.0, help="Gutter (pliure) en mm. Default 0")
+    parser.add_argument("--pad", type=str, choices=["blank", "last"], default="blank", help="Comment padder le dernier carnet. Default blank")
+    parser.add_argument("--overlap-mm", type=float, default=0.2, help="Micro-chevauchement central en mm (pour éliminer ligne blanche). Default 0.2")
+    parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--debug-rects", action="store_true", help="Dessine les rectangles cible/placé (utile pour debug).")
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    inp = Path(args.input)
+    outp = Path(args.output)
+
+    if not inp.exists():
+        print("Fichier d'entrée introuvable :", inp)
+        sys.exit(2)
+    if args.signature % 4 != 0:
+        print("signature doit être multiple de 4")
+        sys.exit(2)
+
+    try:
+        create_booklet_pdf(
+            str(inp),
+            str(outp),
+            paper=args.paper,
+            signature=args.signature,
+            gutter_mm=args.gutter,
+            pad_mode=args.pad,
+            overlap_mm=args.overlap_mm,
+            verbose=args.verbose,
+            debug_rects=args.debug_rects
+        )
+    except Exception as exc:
+        print("Erreur lors de la génération du booklet :", exc)
+        raise
