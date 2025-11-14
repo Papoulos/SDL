@@ -62,27 +62,41 @@ def make_blank_page(width_pt, height_pt):
     return tmp
 
 def generate_test_pdf(path: str, pages: int = 20, paper="A4"):
-    """Génère un PDF de test simple, numéroté, avec repères, et l'écrit sur path."""
+    """Génère un PDF de test numéroté, avec repères utiles pour calibrer le creep."""
     if paper.upper() == "A4":
         w = A4_WIDTH_PT
         h = A4_HEIGHT_PT
     else:
         w = LETTER_WIDTH_PT
         h = LETTER_HEIGHT_PT
+
     doc = fitz.open()
-    for p in range(1, pages+1):
+
+    for p in range(1, pages + 1):
         pg = doc.new_page(width=w, height=h)
-        # fond léger, bordures et numéro grand au centre
-        pg.draw_rect(fitz.Rect(20, 20, w-20, h-20), color=(0.8,0.8,0.8), fill=None, width=0.6)
-        text = f"PAGE {p}"
-        # grand numéro centré
+
+        # Cadre gris
+        pg.draw_rect(
+            fitz.Rect(20, 20, w - 20, h - 20),
+            color=(0.8, 0.8, 0.8),
+            width=0.6
+        )
+
+        # Numéro de page centré
         rc = fitz.Rect(0, 0, w, h)
-        pg.insert_textbox(rc, text, fontsize=72, fontname="helv", align=1)  # center
-        # mini repères pour tester creep (small lines near edges)
-        pg.draw_line((10, 30, 10, 60), color=(1,0,0), width=0.8)
-        pg.draw_line((w-10, 30, w-10, 60), color=(1,0,0), width=0.8)
+        pg.insert_textbox(rc, f"PAGE {p}", fontsize=72, fontname="helv", align=1)
+
+        # Repères rouges verticaux (gauche/droite)
+        pg.draw_line(p1=(10, 30), p2=(10, 60), color=(1, 0, 0), width=1.0)
+        pg.draw_line(p1=(w - 10, 30), p2=(w - 10, 60), color=(1, 0, 0), width=1.0)
+
+        # Repères horizontaux pour vérifier compression/étirement
+        pg.draw_line(p1=(30, 10), p2=(60, 10), color=(0, 0, 1), width=1.0)
+        pg.draw_line(p1=(30, h - 10), p2=(60, h - 10), color=(0, 0, 1), width=1.0)
+
     doc.save(path)
     doc.close()
+
 
 # ---------------- géométrie / scaling ----------------
 
