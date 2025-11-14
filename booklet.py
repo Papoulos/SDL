@@ -4,28 +4,33 @@
 booklet.py
 
 Génère un livret (booklet) prêt à l'impression (mode pliure).
-
-Principales options:
-  --signature N       pages par carnet (multiple de 4). Default 16
-  --paper A4|Letter   papier cible. Default A4
-  --gutter MM         gutter en mm (marge de pliure). Default 0
-  --overlap-mm MM     micro-chevauchement central en mm (pour éviter ligne blanche). Default 0.2
-  --pad blank|last    méthode de padding du dernier carnet. Default blank
-  --scale-mode fit|fill
-                      fit -> conserve le ratio (par défaut)
-                      fill -> occupe tout l'espace A5 (ne conserve pas le ratio)
-  --debug-rects       dessine rectangles cibles/placés pour debug
-  --verbose           logs verboses
+Ajout : compensation du "creep" (--creep en mm par feuille physique).
+Mode test (--test) pour générer un PDF d'exemple.
 
 Usage:
-  python booklet.py input.pdf [output.pdf] [--options...]
+    python booklet.py input.pdf [output.pdf] [--options]
+    python booklet.py --test [output.pdf] [--options]
 
-Si output n'est pas fourni, le fichier de sortie sera:
-  "<input_stem> - Booklet.pdf"
+Options notables:
+    --signature N       pages par carnet (multiple de 4). Default 16
+    --paper A4|Letter   papier cible. Default A4
+    --gutter MM         gutter (pliure) en mm. Default 0
+    --overlap-mm MM     micro-chevauchement central en mm. Default 0.2
+    --pad blank|last    méthode de padding du dernier carnet. Default blank
+    --scale-mode fit|fill
+                        fit conserve ratio (default)
+                        fill remplit tout l'espace A5 (déforme si besoin)
+    --creep MM          active la compensation de creep (mm par feuille physique). Default 0 (désactivé)
+    --test              génère un PDF d'exemple (numéroté) et l'utilise comme source
+    --test-pages N      nombre de pages du PDF de test (default 20)
+    --debug-rects       dessine rectangles cible/placés (debug)
+    --verbose           logs verboses
 """
 from pathlib import Path
 import argparse
 import sys
+import tempfile
+import os
 
 try:
     import fitz  # PyMuPDF
@@ -33,18 +38,18 @@ except Exception:
     print("PyMuPDF requis. Installer: pip install pymupdf")
     raise
 
-# Conversion
+# Conversion mm -> points
 MM_TO_PT = 72.0 / 25.4
 def mm_to_pt(mm: float) -> float:
     return mm * MM_TO_PT
 
-# Paper sizes (portrait) in points
+# Taille papier portrait (points)
 A4_WIDTH_PT = 595.276
 A4_HEIGHT_PT = 841.89
 LETTER_WIDTH_PT = 612.0
 LETTER_HEIGHT_PT = 792.0
 
-# ---------------- utils ----------------
+# ---------------- utilitaires ----------------
 
 def smallest_multiple_of_4_ge(n: int) -> int:
     if n <= 0:
@@ -56,7 +61,30 @@ def make_blank_page(width_pt, height_pt):
     tmp.new_page(width=width_pt, height=height_pt)
     return tmp
 
-# ---------------- geometry / placement ----------------
+def generate_test_pdf(path: str, pages: int = 20, paper="A4"):
+    """Génère un PDF de test simple, numéroté, avec repères, et l'écrit sur path."""
+    if paper.upper() == "A4":
+        w = A4_WIDTH_PT
+        h = A4_HEIGHT_PT
+    else:
+        w = LETTER_WIDTH_PT
+        h = LETTER_HEIGHT_PT
+    doc = fitz.open()
+    for p in range(1, pages+1):
+        pg = doc.new_page(width=w, height=h)
+        # fond léger, bordures et numéro grand au centre
+        pg.draw_rect(fitz.Rect(20, 20, w-20, h-20), color=(0.8,0.8,0.8), fill=None, width=0.6)
+        text = f"PAGE {p}"
+        # grand numéro centré
+        rc = fitz.Rect(0, 0, w, h)
+        pg.insert_textbox(rc, text, fontsize=72, fontname="helv", align=1)  # center
+        # mini repères pour tester creep (small lines near edges)
+        pg.draw_line((10, 30, 10, 60), color=(1,0,0), width=0.8)
+        pg.draw_line((w-10, 30, w-10, 60), color=(1,0,0), width=0.8)
+    doc.save(path)
+    doc.close()
+
+# ---------------- géométrie / scaling ----------------
 
 def compute_embed_rects(page_width: float, page_height: float, gutter_pt: float, margin_tlbr, overlap_pt: float = 0.0):
     """
@@ -100,8 +128,7 @@ def compute_embed_rects(page_width: float, page_height: float, gutter_pt: float,
 def fit_src_rect_into_target(target_rect: fitz.Rect, src_rect: fitz.Rect, scale_mode: str = "fit"):
     """
     Retourne un fitz.Rect placé dans target_rect contenant la source mise à l'échelle.
-    - scale_mode == "fit": conserve le ratio, maximal possible (min scale)
-    - scale_mode == "fill": remplit tout target_rect (ne conserve pas le ratio) -> src sera étirée
+    scale_mode: "fit" conserve ratio, "fill" remplit tout (déforme).
     """
     target_w = target_rect.width
     target_h = target_rect.height
@@ -112,23 +139,20 @@ def fit_src_rect_into_target(target_rect: fitz.Rect, src_rect: fitz.Rect, scale_
         return target_rect
 
     if scale_mode == "fill":
-        # Étire pour remplir complètement la target (ne conserve pas ratio)
         new_w = target_w
         new_h = target_h
-    else:
-        # fit : conserve ratio
+    else:  # fit
         scale = min(target_w / src_w, target_h / src_h)
         new_w = src_w * scale
         new_h = src_h * scale
 
-    # centrer
     x0 = target_rect.x0 + (target_w - new_w) / 2.0
     y0 = target_rect.y0 + (target_h - new_h) / 2.0
     x1 = x0 + new_w
     y1 = y0 + new_h
     return fitz.Rect(x0, y0, x1, y1)
 
-# ---------------- booklet splitting & imposition ----------------
+# ---------------- imposition ----------------
 
 def split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode="blank"):
     out = []
@@ -157,7 +181,7 @@ def split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode="bla
 
 def imposation_for_signature(signature):
     if signature % 4 != 0:
-        raise ValueError("signature must be a multiple of 4")
+        raise ValueError("signature must be multiple of 4")
     N = signature
     sheets = []
     sheets_count = N // 4
@@ -169,16 +193,18 @@ def imposation_for_signature(signature):
         sheets.append((left_recto, right_recto, left_verso, right_verso))
     return sheets
 
-# ---------------- main create function ----------------
+# ---------------- création du booklet ----------------
 
 def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter_mm=0.0,
                        pad_mode="blank", overlap_mm=0.2, scale_mode="fit",
+                       creep_mm: float = 0.0,
                        verbose=False, debug_rects=False):
+    # ouvre le document source
     in_doc = fitz.open(input_path)
     if in_doc.needs_pass:
         raise RuntimeError("Le PDF d'entrée est protégé / chiffré. Impossible de continuer.")
 
-    # paper sizes
+    # dimensions papier portrait -> paysage
     if paper.upper() == "A4":
         portrait_w = A4_WIDTH_PT
         portrait_h = A4_HEIGHT_PT
@@ -186,7 +212,7 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
         portrait_w = LETTER_WIDTH_PT
         portrait_h = LETTER_HEIGHT_PT
     else:
-        raise ValueError("Paper A4 ou Letter seulement pour l'instant")
+        raise ValueError("Paper A4 ou Letter seulement supporté.")
 
     landscape_w = portrait_h
     landscape_h = portrait_w
@@ -195,19 +221,23 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
         print(f"[+] Input pages: {len(in_doc)}")
         print(f"[+] Target paper: {paper} (landscape {landscape_w:.1f} x {landscape_h:.1f} pts)")
 
+    # liste des pages source
     pages = [(in_doc, pno) for pno in range(len(in_doc))]
+
+    # blank template
     blank_doc = make_blank_page(portrait_w, portrait_h)
 
+    # split en booklets (dernier minimal)
     booklets = split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode=pad_mode)
     if verbose:
-        print(f"[+] Booklets to generate: {len(booklets)}")
-        print(f"[+] Booklet sizes: {[len(b) for b in booklets]}")
+        print(f"[+] Booklets à générer: {len(booklets)} sizes: {[len(b) for b in booklets]}")
 
     out_doc = fitz.open()
     gutter_pt = mm_to_pt(gutter_mm)
     overlap_pt = mm_to_pt(overlap_mm)
+    creep_per_sheet_pt = mm_to_pt(creep_mm)
 
-    # default margins 0
+    # marges (0 par défaut)
     margin_mm = 0.0
     margin_pts = (mm_to_pt(margin_mm), mm_to_pt(margin_mm), mm_to_pt(margin_mm), mm_to_pt(margin_mm))
 
@@ -219,6 +249,7 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
         except Exception:
             pass
 
+    # pour chaque booklet
     booklet_idx = 0
     for booklet in booklets:
         booklet_idx += 1
@@ -227,23 +258,50 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
             print(f"[+] Processing booklet {booklet_idx}/{len(booklets)} (signature={sig_here})")
 
         sheets_pattern = imposation_for_signature(sig_here)
+        sheets_count = sig_here // 4  # nombre de feuilles physiques
 
-        for sheet in sheets_pattern:
+        # itérer avec index pour appliquer creep par feuille
+        for sheet_idx, sheet in enumerate(sheets_pattern):
             lr, rr, lv, rv = sheet
             lr_i = lr - 1
             rr_i = rr - 1
             lv_i = lv - 1
             rv_i = rv - 1
 
+            # rects de base (gutter/overlap)
             rect_left, rect_right = compute_embed_rects(landscape_w, landscape_h, gutter_pt, margin_pts, overlap_pt=overlap_pt)
 
-            if verbose:
-                print(f"[DEBUG] rect_left: {rect_left} rect_right: {rect_right} (gutter_mm={gutter_mm} overlap_mm={overlap_mm})")
+            # ---- CREEP COMPENSATION (si creep_mm > 0) ----
+            # creep_for_sheet = creep_per_sheet_pt * (sheets_count - 1 - sheet_idx)
+            # on applique la moitié sur chaque côté (left décalé vers droite, right vers gauche)
+            if creep_per_sheet_pt > 0 and sheets_count > 0:
+                creep_for_sheet = creep_per_sheet_pt * max(0, (sheets_count - 1 - sheet_idx))
+                shift_each_side = creep_for_sheet / 2.0
+                # décaler left vers la droite
+                rect_left = fitz.Rect(
+                    rect_left.x0 + shift_each_side,
+                    rect_left.y0,
+                    rect_left.x1 + shift_each_side,
+                    rect_left.y1
+                )
+                # décaler right vers la gauche
+                rect_right = fitz.Rect(
+                    rect_right.x0 - shift_each_side,
+                    rect_right.y0,
+                    rect_right.x1 - shift_each_side,
+                    rect_right.y1
+                )
+                if verbose:
+                    print(f"[DEBUG] sheet_idx={sheet_idx} creep_for_sheet_pt={creep_for_sheet:.3f} shift_each_side={shift_each_side:.3f}")
 
-            # ---- Recto ----
+            if verbose:
+                print(f"[DEBUG] rect_left: {rect_left}")
+                print(f"[DEBUG] rect_right: {rect_right} (gutter_mm={gutter_mm} overlap_mm={overlap_mm} creep_mm={creep_mm})")
+
+            # --- Recto ---
             page_recto = out_doc.new_page(width=landscape_w, height=landscape_h)
 
-            # left recto with scaling
+            # left recto placement with scaling
             sdoc, spno = booklet[lr_i]
             try:
                 src_rect = sdoc[spno].rect
@@ -257,7 +315,7 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 if verbose:
                     print(f"[!] Warning inserting recto-left: {e}")
 
-            # right recto with scaling
+            # right recto placement with scaling
             sdoc, spno = booklet[rr_i]
             try:
                 src_rect = sdoc[spno].rect
@@ -271,7 +329,7 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 if verbose:
                     print(f"[!] Warning inserting recto-right: {e}")
 
-            # ---- Verso ----
+            # --- Verso ---
             page_verso = out_doc.new_page(width=landscape_w, height=landscape_h)
 
             sdoc, spno = booklet[lv_i]
@@ -300,6 +358,7 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 if verbose:
                     print(f"[!] Warning inserting verso-right: {e}")
 
+    # sauvegarde
     out_doc.save(output_path)
     out_doc.close()
     in_doc.close()
@@ -307,41 +366,64 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
     if verbose:
         print(f"[+] Booklet saved to: {output_path}")
 
-# ---------------- CLI parsing ----------------
+# ---------------- CLI ----------------
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Générer un livret (booklet) prêt à imprimer.")
-    parser.add_argument("input", help="PDF d'entrée (source A4 attendu)")
-    parser.add_argument("output", nargs="?", help="PDF de sortie (optionnel). Si absent -> '<input_stem> - Booklet.pdf'")
+    parser.add_argument("input", nargs="?", help="PDF d'entrée (source A4 attendu). Si --test utilisé, peut être omis.")
+    parser.add_argument("output", nargs="?", help="PDF de sortie (optionnel). Si absent -> '<input_stem> - Booklet.pdf' or 'Test - Booklet.pdf' for --test")
     parser.add_argument("--signature", type=int, default=16, help="Pages par carnet (multiple de 4). Default 16")
     parser.add_argument("--paper", type=str, default="A4", help="Paper target (A4 or Letter). Default A4")
     parser.add_argument("--gutter", type=float, default=0.0, help="Gutter (pliure) en mm. Default 0")
     parser.add_argument("--pad", type=str, choices=["blank", "last"], default="blank", help="Comment padder le dernier carnet. Default blank")
     parser.add_argument("--overlap-mm", type=float, default=0.2, help="Micro-chevauchement central en mm. Default 0.2")
-    parser.add_argument("--scale-mode", type=str, choices=["fit", "fill"], default="fit", help="fit conserve ratio; fill occupe tout l'espace A5 (peut déformer)")
-    parser.add_argument("--debug-rects", action="store_true", help="Dessine rectangles cible/placé (debug)")
+    parser.add_argument("--scale-mode", type=str, choices=["fit", "fill"], default="fit", help="fit conserve ratio (default); fill occupe tout l'espace A5 (déforme)")
+    parser.add_argument("--creep", type=float, default=0.0, help="Compensation creep en mm par feuille physique (0 = désactivé).")
+    parser.add_argument("--test", action="store_true", help="Génère un PDF de test et l'utilise comme source (pratique pour calibration).")
+    parser.add_argument("--test-pages", type=int, default=20, help="Nombre de pages pour le PDF de test (default 20).")
+    parser.add_argument("--debug-rects", action="store_true", help="Dessine rectangles cible/placé (debug).")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
-    inp = Path(args.input)
 
-    if args.output is None:
-        outp = inp.with_name(f"{inp.stem} - Booklet.pdf")
+    # si test -> générer PDF test temporaire
+    temp_test_path = None
+    if args.test:
+        fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd)
+        temp_test_path = tmp_path
+        if args.verbose:
+            print(f"[+] Génération d'un PDF de test {tmp_path} ({args.test_pages} pages)...")
+        generate_test_pdf(tmp_path, pages=args.test_pages, paper=args.paper)
+        input_path = tmp_path
+        # nom de sortie si absent
+        if args.output is None:
+            outp = Path(f"Test - Booklet.pdf")
+        else:
+            outp = Path(args.output)
     else:
-        outp = Path(args.output)
+        if args.input is None:
+            print("Fichier d'entrée requis si --test n'est pas utilisé.")
+            sys.exit(2)
+        input_path = args.input
+        if args.output is None:
+            outp = Path(Path(input_path).stem + " - Booklet.pdf")
+        else:
+            outp = Path(args.output)
 
-    if not inp.exists():
-        print("Fichier d'entrée introuvable :", inp)
-        sys.exit(2)
     if args.signature % 4 != 0:
         print("La signature doit être multiple de 4.")
         sys.exit(2)
 
+    if args.verbose:
+        print(f"[+] input_path = {input_path}")
+        print(f"[+] output_path = {outp}")
+
     try:
         create_booklet_pdf(
-            str(inp),
+            str(input_path),
             str(outp),
             paper=args.paper,
             signature=args.signature,
@@ -349,9 +431,20 @@ if __name__ == "__main__":
             pad_mode=args.pad,
             overlap_mm=args.overlap_mm,
             scale_mode=args.scale_mode,
+            creep_mm=args.creep,
             verbose=args.verbose,
             debug_rects=args.debug_rects
         )
     except Exception as exc:
         print("Erreur lors de la génération du booklet :", exc)
         raise
+    finally:
+        # cleanup fichier test temporaire si créé
+        if temp_test_path:
+            try:
+                os.remove(temp_test_path)
+            except Exception:
+                pass
+
+    if args.verbose:
+        print("[+] Terminé.")
