@@ -13,9 +13,9 @@ Ce script permet de manipuler un fichier PDF local pour :
 
 import argparse
 from pathlib import Path
-from pdf_utils import float_with_comma, crop_pdf, cut_pdf
+from pdf_utils import float_with_comma, crop_pdf, cut_pdf, resize_to_a4
 
-def run(input_pdf: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None):
+def run(input_pdf: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, should_resize: bool = False):
     try:
         in_path = Path(input_pdf)
         if not in_path.is_file():
@@ -32,6 +32,10 @@ def run(input_pdf: str, out_pdf: str, crop_margins: list = None, cut_pages_str: 
         if cut_pages_str:
             print("[+] Suppression de pages...")
             pdf_data = cut_pdf(pdf_data, cut_pages_str)
+
+        if should_resize:
+            print("[+] Redimensionnement en A4...")
+            pdf_data = resize_to_a4(pdf_data)
 
         out_path = Path(out_pdf)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +91,11 @@ Les pages peuvent être spécifiées individuellement ou par intervalle:
   '1-3'    : supprime les pages 1, 2 et 3
   '1,5,10-12': supprime les pages 1, 5, 10, 11 et 12"""
     )
+    parser.add_argument(
+        '--resize-a4',
+        action='store_true',
+        help="Redimensionne toutes les pages au format A4 pleine page."
+    )
     args = parser.parse_args()
 
     output_pdf = args.output_pdf
@@ -98,4 +107,4 @@ Les pages peuvent être spécifiées individuellement ou par intervalle:
     if Path(args.input_pdf).resolve() == Path(output_pdf).resolve():
         print("[!] Erreur : Le fichier d'entrée et de sortie ne peuvent pas être identiques.")
     else:
-        run(args.input_pdf, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut)
+        run(args.input_pdf, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, should_resize=args.resize_a4)
