@@ -49,6 +49,53 @@ def crop_pdf(pdf_data: bytes, crop_margins: list) -> bytes:
         print("[!] Échec du rognage PDF : {}".format(e))
         return pdf_data
 
+def resize_to_a4(pdf_data: bytes) -> bytes:
+    """Redimensionne chaque page d'un PDF au format A4."""
+    A4_WIDTH = 595.276  # 21 cm
+    A4_HEIGHT = 841.89  # 29.7 cm
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_data))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            # Créer une nouvelle page A4 vide
+            a4_page = writer.add_blank_page(width=A4_WIDTH, height=A4_HEIGHT)
+
+            # Calculer le ratio de mise à l'échelle
+            original_width = float(page.mediabox.width)
+            original_height = float(page.mediabox.height)
+
+            scale_w = A4_WIDTH / original_width
+            scale_h = A4_HEIGHT / original_height
+            scale = min(scale_w, scale_h)
+
+            # Calculer les nouvelles dimensions et le décalage pour centrer
+            new_width = original_width * scale
+            new_height = original_height * scale
+            dx = (A4_WIDTH - new_width) / 2
+            dy = (A4_HEIGHT - new_height) / 2
+
+            # Créer une opération de transformation
+            from pypdf.Transformation import Transformation
+            op = Transformation().scale(sx=scale, sy=scale).translate(tx=dx, ty=dy)
+
+            # Appliquer la transformation à la page A4
+            a4_page.merge_page(page, expand=False)
+            a4_page.add_transformation(op)
+
+
+        resized_pdf_stream = io.BytesIO()
+        writer.write(resized_pdf_stream)
+        print("[+] PDF redimensionné au format A4 avec succès.")
+        return resized_pdf_stream.getvalue()
+
+    except Exception as e:
+        import traceback
+        print("[!] Échec du redimensionnement en A4 : {}".format(e))
+        traceback.print_exc()
+        return pdf_data
+
 def cut_pdf(pdf_data: bytes, pages_to_remove_str: str) -> bytes:
     """
     Supprime des pages spécifiques d'un PDF en se basant sur une chaîne de caractères.
