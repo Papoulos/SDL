@@ -33,13 +33,16 @@ def get_embed_url(url: str) -> str:
         return "https://www.scribd.com/embeds/{}/content".format(number_id)
     return url
 
-def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, headless: bool = True):
+def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True):
     embed_url = get_embed_url(url)
     print("[+] Using URL: {}".format(embed_url))
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context(viewport={"width": 1200, "height": 900})
+        context = browser.new_context(
+            viewport={"width": 1200, "height": 900},
+            device_scale_factor=quality
+        )
         page = context.new_page()
 
         try:
@@ -224,6 +227,15 @@ Les pages peuvent être spécifiées individuellement ou par intervalle:
   '1-3'    : supprime les pages 1, 2 et 3
   '1,5,10-12': supprime les pages 1, 5, 10, 11 et 12"""
     )
+    parser.add_argument(
+        '--quality',
+        type=int,
+        default=1,
+        metavar='FACTEUR',
+        help="""Facteur de qualité (résolution) pour le rendu du PDF.
+Utilisez 2 pour une qualité 'Retina' (double résolution).
+La valeur par défaut est 1 (qualité normale)."""
+    )
     args = parser.parse_args()
 
     output_pdf = args.output_pdf
@@ -243,4 +255,4 @@ Les pages peuvent être spécifiées individuellement ou par intervalle:
         output_pdf = "{}.pdf".format(filename_base)
         print("[+] Nom de fichier non fourni. Utilisation auto : {}".format(output_pdf))
 
-    run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, headless=True)
+    run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True)
