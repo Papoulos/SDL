@@ -272,6 +272,7 @@ def imposation_for_signature(signature):
 def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter_mm=0.0,
                        pad_mode="blank", overlap_mm=0.2, scale_mode="fit",
                        creep_mm: float = 0.0,
+                       book: bool = False,
                        verbose=False, debug_rects=False):
     in_doc = fitz.open(input_path)
     if in_doc.needs_pass:
@@ -295,6 +296,17 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
 
     pages = [(in_doc, pno) for pno in range(len(in_doc))]
     blank_doc = make_blank_page(portrait_w, portrait_h)
+
+    if book:
+        blank_page_entry = (blank_doc, 0)
+        # 2 pages au début
+        pages.insert(0, blank_page_entry)
+        pages.insert(0, blank_page_entry)
+        # 2 pages à la fin
+        pages.append(blank_page_entry)
+        pages.append(blank_page_entry)
+        if verbose:
+            print(f"[+] Ajout de 2+2 pages blanches pour la reliure (mode --book). Nouveau total : {len(pages)} pages.")
 
     booklets = split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode=pad_mode)
     if verbose:
@@ -423,6 +435,7 @@ def parse_args():
     parser.add_argument("input", nargs="?", help="PDF d'entrée (source A4 attendu). Si --test utilisé, peut être omis.")
     parser.add_argument("output", nargs="?", help="PDF de sortie (optionnel). Si absent -> '<input_stem> - Booklet.pdf' or 'Test - Booklet.pdf' for --test")
     parser.add_argument("--signature", type=int, default=16, help="Pages par carnet (multiple de 4). Default 16")
+    parser.add_argument("--book", action="store_true", help="Ajoute deux pages blanches recto verso au début et à la fin pour la reliure.")
     parser.add_argument("--paper", type=str, default="A4", help="Paper target (A4 or Letter). Default A4")
     parser.add_argument("--gutter", type=float, default=0.0, help="Gutter (pliure) en mm. Default 0")
     parser.add_argument("--pad", type=str, choices=["blank", "last"], default="blank", help="Comment padder le dernier carnet. Default blank")
@@ -481,6 +494,7 @@ if __name__ == "__main__":
             overlap_mm=args.overlap_mm,
             scale_mode=args.scale_mode,
             creep_mm=args.creep,
+            book=args.book,
             verbose=args.verbose,
             debug_rects=args.debug_rects
         )
