@@ -298,6 +298,15 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
     blank_doc = make_blank_page(portrait_w, portrait_h)
 
     if book:
+        if len(pages) >= 2:
+            # Supprimer la première et la dernière page
+            pages.pop(0)
+            pages.pop(-1)
+            if verbose:
+                print(f"[+] Suppression de la première et de la dernière page (mode --book).")
+        elif verbose:
+            print(f"[!] Pas assez de pages pour supprimer la couverture et le dos (mode --book).")
+
         blank_page_entry = (blank_doc, 0)
         # 2 pages au début
         pages.insert(0, blank_page_entry)
