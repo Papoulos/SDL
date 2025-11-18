@@ -32,6 +32,8 @@ import sys
 import tempfile
 import os
 import math
+import json
+import requests
 
 try:
     import fitz  # PyMuPDF
@@ -267,6 +269,139 @@ def imposation_for_signature(signature):
         sheets.append((left_recto, right_recto, left_verso, right_verso))
     return sheets
 
+# ---------------- création de la tranche ----------------
+
+CONFIG_FILE = "config.json"
+FONT_CACHE_DIR = Path(tempfile.gettempdir())
+FONT_CACHE_NAME = "booklet_font_cache.ttf"
+FONT_CACHE_PATH = FONT_CACHE_DIR / FONT_CACHE_NAME
+
+def load_config(verbose=False):
+    """Charge la configuration depuis config.json."""
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if verbose:
+            print(f"[+] Configuration chargée depuis {CONFIG_FILE}")
+        return config
+    except FileNotFoundError:
+        raise RuntimeError(f"Fichier de configuration '{CONFIG_FILE}' introuvable.")
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Erreur de syntaxe dans '{CONFIG_FILE}'.")
+
+def download_font(url, verbose=False):
+    """Télécharge la police si elle n'est pas déjà en cache."""
+    if FONT_CACHE_PATH.exists():
+        if verbose:
+            print(f"[+] Police déjà en cache : {FONT_CACHE_PATH}")
+        return str(FONT_CACHE_PATH)
+
+    if verbose:
+        print(f"[+] Téléchargement de la police depuis {url}...")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        with open(FONT_CACHE_PATH, "wb") as f:
+            f.write(response.content)
+        if verbose:
+            print(f"[+] Police sauvegardée dans {FONT_CACHE_PATH}")
+        return str(FONT_CACHE_PATH)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Erreur lors du téléchargement de la police : {e}")
+
+def add_spine_to_cover(cover_path, input_filename, verbose=False):
+    """
+    Génère la tranche et l'ajoute au PDF de couverture existant.
+    """
+    config = load_config(verbose=verbose)
+    font_path = download_font(config.get("font_url"), verbose=verbose)
+
+    spine_width_mm = config.get("spine_width_mm", 20)
+    text = config.get("text", "")
+    if not text:
+        text = input_filename.replace('_', ' ').replace('-', ' ')
+
+    if verbose:
+        print(f"[+] Génération de la tranche: texte='{text}', largeur={spine_width_mm}mm")
+
+    # Dimensions
+    spine_width_pt = mm_to_pt(spine_width_mm)
+    # A5 portrait height is A4 portrait width
+    spine_height_pt = A4_WIDTH_PT
+
+    spine_doc = fitz.open()
+    spine_page = spine_doc.new_page(width=spine_width_pt, height=spine_height_pt)
+
+    # Margins de 3.2cm
+    margin_pt = mm_to_pt(32)
+    spine_page.draw_rect(
+        fitz.Rect(margin_pt, margin_pt, spine_width_pt - margin_pt, spine_height_pt - margin_pt),
+        color=(0.8, 0.8, 0.8), width=0.5
+    )
+
+    # Text properties
+    drawable_height = spine_height_pt - 2 * margin_pt
+    target_text_length = drawable_height * 0.75
+    font_buffer = Path(font_path).read_bytes()
+
+    # Use a Font object for custom font metrics, as fitz.get_text_length only supports built-in fonts.
+    font = fitz.Font(fontbuffer=font_buffer)
+    text_len_at_size_1 = font.text_length(text, fontsize=1)
+    fontsize = (target_text_length / text_len_at_size_1) if text_len_at_size_1 > 0 else 12
+
+    # Register the font with the page for drawing.
+    font_name = "customfont"
+    spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer)
+
+    # Text placement (rotated -90 degrees, i.e., bottom to top)
+    text_length = font.text_length(text, fontsize=fontsize)
+    # For font metrics, we can get ascent, descent. Using fontsize is a good approximation for height.
+    text_height_approx = fontsize
+
+    # Coordinates for page.insert_text with rotate=-90
+    # The point 'p' is the bottom-left of the text's bounding box *before* rotation.
+    # After rotation, this point becomes the bottom-right corner of the upright text.
+    p_x = (spine_width_pt + text_height_approx) / 2
+    p_y = (spine_height_pt + text_length) / 2
+
+    spine_page.insert_text(
+        fitz.Point(p_x, p_y),
+        text,
+        fontname=font_name,
+        fontsize=fontsize,
+        rotate=-90
+    )
+
+    spine_pdf_bytes = spine_doc.tobytes()
+    spine_doc.close()
+
+    # Merge with the cover file
+    if verbose:
+        print(f"[+] Fusion de la tranche avec {cover_path}")
+
+    cover_doc = fitz.open(cover_path)
+    if cover_doc.page_count != 2:
+        print(f"[!] Le fichier de couverture '{cover_path}' n'a pas 2 pages. Abandon.")
+        cover_doc.close()
+        return
+
+    final_cover_doc = fitz.open()
+    final_cover_doc.insert_pdf(cover_doc, from_page=0, to_page=0)
+
+    spine_inserter_doc = fitz.open("pdf", spine_pdf_bytes)
+    final_cover_doc.insert_pdf(spine_inserter_doc)
+
+    final_cover_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
+
+    # Save over the original cover file
+    final_cover_doc.save(cover_path, garbage=4, deflate=True)
+    final_cover_doc.close()
+    cover_doc.close()
+
+    if verbose:
+        print(f"[+] Tranche ajoutée avec succès à '{cover_path}'.")
+
+
 # ---------------- création du booklet ----------------
 
 def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
@@ -495,6 +630,7 @@ def parse_args():
     parser.add_argument("--test-pages", type=int, default=20, help="Nombre de pages pour le PDF de test (default 20).")
     parser.add_argument("--test-grid", action="store_true", help="Ajoute un quadrillage 1 mm + graduations 10 mm au PDF de test.")
     parser.add_argument("--debug-rects", action="store_true", help="Dessine rectangles cible/placé (debug).")
+    parser.add_argument("--cover", action="store_true", help="Ajoute une tranche (spine) au fichier de couverture (nécessite --book).")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     return parser.parse_args()
 
@@ -567,6 +703,18 @@ if __name__ == "__main__":
                 os.remove(temp_test_path)
             except Exception:
                 pass
+
+    if args.cover and args.book and cover_outp and Path(cover_outp).exists():
+        if args.verbose:
+            print(f"[+] Ajout de la tranche au fichier de couverture : {cover_outp}")
+        try:
+            add_spine_to_cover(
+                cover_path=str(cover_outp),
+                input_filename=Path(input_path).stem,
+                verbose=args.verbose
+            )
+        except Exception as exc:
+            print(f"Erreur lors de l'ajout de la tranche : {exc}")
 
     if args.verbose:
         print("[+] Terminé.")

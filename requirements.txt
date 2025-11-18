@@ -2,3 +2,4 @@ playwright
 pypdf
 pikepdf
 PyMuPDF
+requests
