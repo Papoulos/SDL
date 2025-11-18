@@ -269,11 +269,46 @@ def imposation_for_signature(signature):
 
 # ---------------- création du booklet ----------------
 
+def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
+    """
+    Crée un PDF A4 pour les couvertures avec un cadre de 3.2 cm.
+    """
+    if verbose:
+        print(f"[+] Création du PDF pour les couvertures : {cover_path}")
+
+    w_pt = A4_WIDTH_PT
+    h_pt = A4_HEIGHT_PT
+    margin_cm = 3.2
+    margin_pt = mm_to_pt(margin_cm * 10)
+
+    out_doc = fitz.open()
+
+    # Page 1: Couverture avant
+    sdoc, spno = first_page_tuple
+    page_recto = out_doc.new_page(width=w_pt, height=h_pt)
+    target_rect = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
+    page_recto.draw_rect(target_rect, color=(0.8, 0.8, 0.8), width=0.5)
+    src_rect = sdoc[spno].rect
+    placed_rect = fit_src_rect_into_target(target_rect, src_rect, scale_mode="fit")
+    page_recto.show_pdf_page(placed_rect, sdoc, spno)
+
+    # Page 2: Dos de la couverture
+    sdoc, spno = last_page_tuple
+    page_verso = out_doc.new_page(width=w_pt, height=h_pt)
+    target_rect = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
+    page_verso.draw_rect(target_rect, color=(0.8, 0.8, 0.8), width=0.5)
+    src_rect = sdoc[spno].rect
+    placed_rect = fit_src_rect_into_target(target_rect, src_rect, scale_mode="fit")
+    page_verso.show_pdf_page(placed_rect, sdoc, spno)
+
+    out_doc.save(cover_path)
+    out_doc.close()
+
 def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter_mm=0.0,
                        pad_mode="blank", overlap_mm=0.2, scale_mode="fit",
                        creep_mm: float = 0.0,
                        book: bool = False,
-                       verbose=False, debug_rects=False):
+                       verbose=False, debug_rects=False, cover_path=None):
     in_doc = fitz.open(input_path)
     if in_doc.needs_pass:
         raise RuntimeError("Le PDF d'entrée est protégé / chiffré. Impossible de continuer.")
@@ -299,6 +334,11 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
 
     if book:
         if len(pages) >= 2:
+            first_page = pages[0]
+            last_page = pages[-1]
+            if cover_path:
+                create_cover_pdf(cover_path, first_page, last_page, verbose=verbose)
+
             # Supprimer la première et la dernière page
             pages.pop(0)
             pages.pop(-1)
@@ -484,6 +524,14 @@ if __name__ == "__main__":
         else:
             outp = Path(args.output)
 
+    cover_outp = None
+    if args.book:
+        stem = outp.stem
+        if stem.endswith(" - Booklet"):
+            stem = stem[:-9]
+        cover_outp = outp.with_name(stem + " - Cover.pdf")
+
+
     if args.signature % 4 != 0:
         print("La signature doit être multiple de 4.")
         sys.exit(2)
@@ -491,6 +539,8 @@ if __name__ == "__main__":
     if args.verbose:
         print(f"[+] input_path = {input_path}")
         print(f"[+] output_path = {outp}")
+        if cover_outp:
+            print(f"[+] cover_output_path = {cover_outp}")
 
     try:
         create_booklet_pdf(
@@ -505,7 +555,8 @@ if __name__ == "__main__":
             creep_mm=args.creep,
             book=args.book,
             verbose=args.verbose,
-            debug_rects=args.debug_rects
+            debug_rects=args.debug_rects,
+            cover_path=str(cover_outp) if cover_outp else None
         )
     except Exception as exc:
         print("Erreur lors de la génération du booklet :", exc)
