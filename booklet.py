@@ -311,9 +311,10 @@ def download_font(url, verbose=False):
 
 def add_spine_to_cover(cover_path, input_filename, verbose=False):
     """
-    Génère la tranche (Page A4) :
-    - Cadre : 3,2 cm en haut et en bas. Largeur définie par config.json.
-    - Texte : Vertical (bas vers haut), centré, occupant 75% de la hauteur du cadre.
+    Génère la tranche avec :
+    - Un cadre noir visible (overlay=True).
+    - Marge haut/bas de 3,2 cm.
+    - Texte centré verticalement et horizontalement (via textbox contraint).
     """
     config = load_config(verbose=verbose)
     
@@ -328,7 +329,7 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
         font_name = "helv"
         has_custom_font = False
 
-    # --- 2. Dimensions et Géométrie ---
+    # --- 2. Dimensions Tranche ---
     spine_width_mm = config.get("spine_width_mm", 20)
     text = config.get("text", "")
     if not text:
@@ -336,31 +337,33 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
 
     spine_width_pt = mm_to_pt(spine_width_mm)
     
-    # Marges haut/bas de 3,2 cm (32 mm)
+    # Marges haut/bas de 3,2 cm
     margin_h_mm = 32.0
     margin_h_pt = mm_to_pt(margin_h_mm)
     
-    # Hauteur du cadre visible de la tranche
+    # Hauteur disponible pour le cadre
     rect_h_pt = A4_HEIGHT_PT - (2 * margin_h_pt)
 
     spine_doc = fitz.open()
     spine_page = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
 
-    # Coordonnées du rectangle de la tranche (Centré horizontalement sur A4)
-    x0 = (A4_WIDTH_PT - spine_width_pt) / 2
+    # --- 3. Rectangle du Cadre de la Tranche ---
+    # Centré horizontalement sur la page A4
+    cx = A4_WIDTH_PT / 2
+    x0 = cx - (spine_width_pt / 2)
+    x1 = cx + (spine_width_pt / 2)
+    
     y0 = margin_h_pt
-    x1 = x0 + spine_width_pt
     y1 = y0 + rect_h_pt
     
     spine_rect = fitz.Rect(x0, y0, x1, y1)
 
-    # --- 3. Dessin du Cadre ---
-    # overlay=True assure que le trait est dessiné au-dessus de tout fond potentiel
+    # DESSIN DU CADRE : On utilise overlay=True pour être sûr qu'il est au-dessus
     spine_page.draw_rect(spine_rect, color=(0, 0, 0), width=1.0, overlay=True)
 
-    # --- 4. Calcul de la Police et Positionnement ---
-    # On veut que le texte remplisse 75% de la hauteur du cadre (rect_h_pt)
-    target_text_len = rect_h_pt * 0.75
+    # --- 4. Calcul Taille Police ---
+    # Cible : 75% de la hauteur disponible
+    target_len = rect_h_pt * 0.75
 
     if has_custom_font:
         spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer)
@@ -368,72 +371,46 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
     else:
         temp_font = fitz.Font("helv")
 
-    # Calcul de la taille de police nécessaire
     len_at_1 = temp_font.text_length(text, fontsize=1)
-    if len_at_1 > 0:
-        fontsize = target_text_len / len_at_1
-    else:
-        fontsize = 24
+    fontsize = (target_len / len_at_1) if len_at_1 > 0 else 24
 
-    # Limite de sécurité : la "hauteur" de la police (largeur visuelle sur la tranche)
-    # ne doit pas dépasser l'épaisseur de la tranche (avec une marge de 15%)
-    max_thickness = spine_width_pt * 0.85
+    # Sécurité épaisseur (le texte ne doit pas déborder de la largeur de la tranche)
+    max_thickness = spine_width_pt * 0.80
     if fontsize > max_thickness:
         fontsize = max_thickness
-        if verbose: print(f"[!] Police réduite à {fontsize:.1f}pt pour l'épaisseur.")
 
-    # Recalcul de la longueur réelle du texte avec la taille finale
-    final_text_len = temp_font.text_length(text, fontsize=fontsize)
+    # --- 5. Insertion Texte Centré (Méthode Robuste) ---
+    # Pour centrer parfaitement dans l'épaisseur (Axe X page), on définit
+    # un rectangle de textbox très étroit centré sur cx, mais avec rotate=90.
+    # PyMuPDF centrera le texte dans la "hauteur" de ce rectangle (qui est la largeur visuelle).
+    
+    # On définit un rectangle pour le texte qui correspond exactement à la zone de dessin
+    # Mais on peut le restreindre légèrement pour aider l'algo d'alignement
+    text_rect = fitz.Rect(x0, y0, x1, y1)
 
-    # --- 5. Insertion Manuelle (Centrage Parfait) ---
-    # Pour centrer du texte tourné à 90° (bas vers haut) :
-    # Centre X du rect = x0 + width/2
-    # Centre Y du rect = y0 + height/2
-    
-    cx = (x0 + x1) / 2
-    cy = (y0 + y1) / 2
-    
-    # Point de départ pour insert_text (rotate=90) :
-    # L'origine est le coin bas-gauche du premier caractère (avant rotation).
-    # Après rotation 90° CCW : 
-    # - L'axe X du texte devient l'axe Y de la page (vers le haut).
-    # - L'axe Y du texte devient l'axe X de la page (vers la gauche).
-    
-    # Pour centrer verticalement sur la page (le long du texte) :
-    # On part du centre Y (cy) et on descend de la moitié de la longueur du texte.
-    start_y = cy + (final_text_len / 2)
-    
-    # Pour centrer horizontalement sur la page (épaisseur tranche) :
-    # On doit décaler le point d'insertion vers la droite du centre (cx).
-    # Le décalage est environ 1/3 de la taille de police (pour compenser la ligne de base).
-    # Ajustement empirique pour centrer visuellement la majuscule : + fontsize * 0.35
-    start_x = cx + (fontsize * 0.35)
-    
-    spine_page.insert_text(
-        (start_x, start_y),
+    spine_page.insert_textbox(
+        text_rect,
         text,
-        fontname=font_name,
         fontsize=fontsize,
-        rotate=90,  # 90 degrés (Lecture bas vers haut)
-        color=(0, 0, 0)
+        fontname=font_name,
+        align=1,      # 1 = CENTER (Centre le texte sur la hauteur de la page)
+        rotate=90     # Écrit de bas en haut
     )
 
-    # Sauvegarde et Fusion
+    # Sauvegarde
     spine_pdf_bytes = spine_doc.tobytes()
     spine_doc.close()
 
+    # Fusion
     cover_doc = fitz.open(cover_path)
     final_doc = fitz.open()
     
-    # Ajout Page 1 (Front)
     if cover_doc.page_count >= 1:
         final_doc.insert_pdf(cover_doc, from_page=0, to_page=0)
     
-    # Ajout Page Tranche
     spine_inserter = fitz.open("pdf", spine_pdf_bytes)
     final_doc.insert_pdf(spine_inserter)
     
-    # Ajout Page 2 (Back)
     if cover_doc.page_count >= 2:
         final_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
 
@@ -449,10 +426,9 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
 
 def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
     """
-    Crée le PDF Couverture avec marges strictes.
-    Dimensions :
-    - Front (Page 1) : Gauche=1cm, Haut=3.2cm, Bas=3.2cm, Droite=3.2cm
-    - Back (Page 2)  : Gauche=3.2cm, Haut=3.2cm, Bas=3.2cm, Droite=1cm
+    Crée le PDF Cover avec marges strictes demandées :
+    - Front : Gauche=1cm, Droite=3.2cm, Haut/Bas=3.2cm
+    - Back  : Droite=1cm, Gauche=3.2cm, Haut/Bas=3.2cm
     """
     if verbose:
         print(f"[+] Création du PDF couverture : {cover_path}")
@@ -460,9 +436,9 @@ def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=Fals
     w_pt = A4_WIDTH_PT
     h_pt = A4_HEIGHT_PT
     
-    # Définition des marges en points
-    m_large = mm_to_pt(32.0)  # 3.2 cm
-    m_small = mm_to_pt(10.0)  # 1.0 cm
+    # Définition des marges
+    m_large = mm_to_pt(32.0) # 3,2 cm
+    m_small = mm_to_pt(10.0) # 1,0 cm
 
     out_doc = fitz.open()
 
@@ -470,27 +446,26 @@ def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=Fals
         sdoc, spno = page_source
         pg = out_doc.new_page(width=w_pt, height=h_pt)
         
-        # Définition du Rectangle du Cadre
+        # Calcul des coordonnées du cadre
         if is_front:
-            # FRONT : Marge Gauche Petite (1cm), les autres Grandes (3.2cm)
-            x0 = m_small
-            y0 = m_large
-            x1 = w_pt - m_large
-            y1 = h_pt - m_large
+            # Front (Page de droite) : Reliure à Gauche (1cm)
+            x0 = m_small             # 10mm
+            y0 = m_large             # 32mm
+            x1 = w_pt - m_large      # A4 - 32mm
+            y1 = h_pt - m_large      # A4 - 32mm
         else:
-            # BACK : Marge Droite Petite (1cm), les autres Grandes (3.2cm)
-            x0 = m_large
-            y0 = m_large
-            x1 = w_pt - m_small
-            y1 = h_pt - m_large
+            # Back (Page de gauche) : Reliure à Droite (1cm)
+            x0 = m_large             # 32mm
+            y0 = m_large             # 32mm
+            x1 = w_pt - m_small      # A4 - 10mm
+            y1 = h_pt - m_large      # A4 - 32mm
             
         border_rect = fitz.Rect(x0, y0, x1, y1)
         
-        # 1. Dessiner le cadre noir
+        # 1. Dessin du cadre noir
         pg.draw_rect(border_rect, color=(0, 0, 0), width=1.0)
         
-        # 2. Placer l'image source
-        # On ajoute un padding interne de 1mm (safe area) pour ne pas toucher le trait noir
+        # 2. Placement de l'image (padding interne 1mm)
         pad = mm_to_pt(1.0)
         safe_rect = fitz.Rect(
             border_rect.x0 + pad, 
@@ -503,10 +478,10 @@ def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=Fals
         placed_rect = fit_src_rect_into_target(safe_rect, src_rect, scale_mode="fit")
         pg.show_pdf_page(placed_rect, sdoc, spno)
 
-    # Page 1 : Front (is_front=True -> Marge gauche 1cm)
+    # Page 1 : Front
     draw_page(first_page_tuple, is_front=True)
     
-    # Page 2 : Back (is_front=False -> Marge droite 1cm)
+    # Page 2 : Back
     draw_page(last_page_tuple, is_front=False)
 
     out_doc.save(cover_path)
