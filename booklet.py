@@ -66,111 +66,6 @@ def make_blank_page(width_pt, height_pt):
     tmp.new_page(width=width_pt, height=height_pt)
     return tmp
 
-def generate_test_pdf(path: str, pages: int = 20, paper="A4", grid: bool = False):
-    """
-    Génère un PDF de test numéroté, avec repères, et option quadrillage 1 mm.
-    - grid=False : version simple (cadre + numéro + repères)
-    - grid=True  : quadrillage 1 mm (très fin) + graduations tous les 10 mm (traits + labels)
-    """
-    if paper.upper() == "A4":
-        w_pt = A4_WIDTH_PT
-        h_pt = A4_HEIGHT_PT
-        w_mm = 210.0
-        h_mm = 297.0
-    else:
-        w_pt = LETTER_WIDTH_PT
-        h_pt = LETTER_HEIGHT_PT
-        # approximations pour letter in mm
-        w_mm = 216.0
-        h_mm = 279.0
-
-    doc = fitz.open()
-
-    # grid styling
-    grid_line_width = 0.15  # very thin
-    grid_color = (0.85, 0.85, 0.85)  # light gray
-    major_line_width = 0.5
-    major_color = (0.6, 0.6, 0.6)  # darker gray
-    tick_color = (1, 0, 0)  # red ticks for edges
-    label_color = (0, 0, 0)
-
-    # conversion helper: mm -> points
-    def mm2pt(mm): return mm_to_pt(mm)
-
-    # Precompute counts
-    cols = int(math.floor(w_mm))  # approx number of mm columns
-    rows = int(math.floor(h_mm))
-
-    for p in range(1, pages + 1):
-        pg = doc.new_page(width=w_pt, height=h_pt)
-
-        # simple frame
-        pg.draw_rect(fitz.Rect(10, 10, w_pt - 10, h_pt - 10), color=(0.8, 0.8, 0.8), width=0.6)
-
-        # big centered page number
-        rc = fitz.Rect(0, 0, w_pt, h_pt)
-        pg.insert_textbox(rc, f"PAGE {p}", fontsize=56, fontname="helv", align=1)
-
-        # small edge ticks to visual check
-        pg.draw_line(p1=(mm2pt(5), mm2pt(5)), p2=(mm2pt(15), mm2pt(5)), color=(0, 0, 1), width=1.0)
-        pg.draw_line(p1=(mm2pt(5), h_pt - mm2pt(5)), p2=(mm2pt(15), h_pt - mm2pt(5)), color=(0, 0, 1), width=1.0)
-
-        if grid:
-            # draw 1 mm vertical grid lines
-            x = 0.0
-            # draw as lines across page height
-            for i in range(0, int(math.ceil(w_mm)) + 1):
-                x_pt = mm2pt(i)
-                # choose major line every 10 mm
-                if i % 10 == 0:
-                    pg.draw_line(p1=(x_pt, 0), p2=(x_pt, h_pt), color=major_color, width=major_line_width)
-                else:
-                    pg.draw_line(p1=(x_pt, 0), p2=(x_pt, h_pt), color=grid_color, width=grid_line_width)
-            # draw 1 mm horizontal grid lines
-            for j in range(0, int(math.ceil(h_mm)) + 1):
-                y_pt = mm2pt(j)
-                if j % 10 == 0:
-                    pg.draw_line(p1=(0, y_pt), p2=(w_pt, y_pt), color=major_color, width=major_line_width)
-                else:
-                    pg.draw_line(p1=(0, y_pt), p2=(w_pt, y_pt), color=grid_color, width=grid_line_width)
-
-            # draw rulers (numbers) along top and left every 10 mm
-            for i in range(0, int(math.ceil(w_mm / 10.0)) + 1):
-                xm = i * 10
-                x_pt = mm2pt(xm)
-                label = str(xm)
-                # top label (rotate none, small)
-                pg.insert_text((x_pt + mm2pt(1), mm2pt(2)), label, fontsize=6, fontname="helv", color=label_color)
-                # small tick
-                pg.draw_line(p1=(x_pt, 0), p2=(x_pt, mm2pt(3)), color=tick_color, width=0.8)
-
-            for j in range(0, int(math.ceil(h_mm / 10.0)) + 1):
-                ym = j * 10
-                y_pt = mm2pt(ym)
-                label = str(ym)
-                # left label
-                pg.insert_text((mm2pt(1), y_pt + mm2pt(1)), label, fontsize=6, fontname="helv", color=label_color)
-                # small tick
-                pg.draw_line(p1=(0, y_pt), p2=(mm2pt(3), y_pt), color=tick_color, width=0.8)
-
-            # draw corner cut marks for reference (5mm from corners)
-            c = 5
-            # top-left corner
-            pg.draw_line(p1=(mm2pt(c), 0), p2=(mm2pt(c), mm2pt(8)), color=(0,0,0), width=0.8)
-            pg.draw_line(p1=(0, mm2pt(c)), p2=(mm2pt(8), mm2pt(c)), color=(0,0,0), width=0.8)
-            # top-right
-            pg.draw_line(p1=(w_pt - mm2pt(c), 0), p2=(w_pt - mm2pt(c), mm2pt(8)), color=(0,0,0), width=0.8)
-            pg.draw_line(p1=(w_pt - mm2pt(8), mm2pt(c)), p2=(w_pt, mm2pt(c)), color=(0,0,0), width=0.8)
-            # bottom-left
-            pg.draw_line(p1=(mm2pt(c), h_pt), p2=(mm2pt(c), h_pt - mm2pt(8)), color=(0,0,0), width=0.8)
-            pg.draw_line(p1=(0, h_pt - mm2pt(c)), p2=(mm2pt(8), h_pt - mm2pt(c)), color=(0,0,0), width=0.8)
-            # bottom-right
-            pg.draw_line(p1=(w_pt - mm2pt(c), h_pt), p2=(w_pt - mm2pt(c), h_pt - mm2pt(8)), color=(0,0,0), width=0.8)
-            pg.draw_line(p1=(w_pt - mm2pt(8), h_pt - mm2pt(c)), p2=(w_pt, h_pt - mm2pt(c)), color=(0,0,0), width=0.8)
-
-    doc.save(path)
-    doc.close()
-
 # ---------------- géométrie / scaling ----------------
 
 def compute_embed_rects(page_width: float, page_height: float, gutter_pt: float, margin_tlbr, overlap_pt: float = 0.0):
@@ -281,178 +176,12 @@ def imposation_for_signature(signature):
         sheets.append((left_recto, right_recto, left_verso, right_verso))
     return sheets
 
-# ---------------- création de la tranche ----------------
-
-CONFIG_FILE = "config.json"
-FONT_CACHE_DIR = Path(tempfile.gettempdir())
-FONT_CACHE_NAME = "booklet_font_cache.ttf"
-FONT_CACHE_PATH = FONT_CACHE_DIR / FONT_CACHE_NAME
-
-def load_config(verbose=False):
-    """Charge la configuration depuis config.json."""
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        if verbose:
-            print(f"[+] Configuration chargée depuis {CONFIG_FILE}")
-        return config
-    except FileNotFoundError:
-        raise RuntimeError(f"Fichier de configuration '{CONFIG_FILE}' introuvable.")
-    except json.JSONDecodeError:
-        raise RuntimeError(f"Erreur de syntaxe dans '{CONFIG_FILE}'.")
-
-def download_font(url, verbose=False):
-    """Télécharge la police si elle n'est pas déjà en cache."""
-    if FONT_CACHE_PATH.exists():
-        if verbose:
-            print(f"[+] Police déjà en cache : {FONT_CACHE_PATH}")
-        return str(FONT_CACHE_PATH)
-
-    if verbose:
-        print(f"[+] Téléchargement de la police depuis {url}...")
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        with open(FONT_CACHE_PATH, "wb") as f:
-            f.write(response.content)
-        if verbose:
-            print(f"[+] Police sauvegardée dans {FONT_CACHE_PATH}")
-        return str(FONT_CACHE_PATH)
-    except requests.RequestException as e:
-        raise RuntimeError(f"Erreur lors du téléchargement de la police : {e}")
-
-def add_spine_to_cover(cover_path, input_filename, verbose=False):
-    config = load_config(verbose=verbose)
-
-    spine_width_mm = float(config.get("spine_width_mm", 30))
-    spine_text = (config.get("text") or "").strip() or Path(input_filename).stem
-    font_url = config.get("font_url")
-
-    a5_h_pt = mm_to_pt(A5_HEIGHT_MM)
-    SPINE_MARGIN_MM = 32.0
-
-    spine_doc = fitz.open()
-    page_spine = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
-    spine_w_pt = mm_to_pt(spine_width_mm)
-    spine_rect = fitz.Rect(A4_WIDTH_PT/2 - spine_w_pt/2,
-                           A4_HEIGHT_PT/2 - a5_h_pt/2,
-                           A4_WIDTH_PT/2 + spine_w_pt/2,
-                           A4_HEIGHT_PT/2 + a5_h_pt/2)
-
-    outer_spine = spine_rect + (-mm_to_pt(SPINE_MARGIN_MM), -mm_to_pt(SPINE_MARGIN_MM),
-                                mm_to_pt(SPINE_MARGIN_MM), mm_to_pt(SPINE_MARGIN_MM))
-    page_spine.draw_rect(outer_spine, color=(0,0,0), width=1.5)
-    page_spine.draw_rect(spine_rect, color=(0,0,0), width=1)
-
-    fontfile = None
-    if font_url:
-        try:
-            fontfile = download_font(font_url, verbose=verbose)
-            if verbose: print(f"Police custom chargée depuis le cache/téléchargement.")
-        except Exception as e:
-            if verbose: print("Échec police custom → fallback Helvetica :", e)
-            fontfile = None
-
-    padding = mm_to_pt(5)
-    text_rect = spine_rect + (padding, padding, -padding, -padding)
-
-    fontsize = spine_rect.height * 0.75
-    for _ in range(40):
-        try:
-            rc = page_spine.insert_textbox(
-                text_rect,
-                spine_text,
-                fontsize=fontsize,
-                fontname="helv" if not fontfile else "CustomFont",
-                fontfile=fontfile,
-                align=fitz.TEXT_ALIGN_CENTER,
-                rotate=90,
-                color=(0,0,0)
-            )
-            if rc >= 0:
-                break
-        except:
-            pass
-        fontsize *= 0.93
-    else:
-        page_spine.insert_textbox(text_rect, spine_text, fontsize=fontsize,
-                                  fontname="helv", align=1, rotate=90, color=0)
-
-    spine_pdf_bytes = spine_doc.tobytes()
-    spine_doc.close()
-
-    cover_doc = fitz.open(cover_path)
-    final_doc = fitz.open()
-    
-    if cover_doc.page_count >= 1:
-        final_doc.insert_pdf(cover_doc, from_page=0, to_page=0)
-    
-    spine_inserter = fitz.open("pdf", spine_pdf_bytes)
-    final_doc.insert_pdf(spine_inserter)
-    
-    if cover_doc.page_count >= 2:
-        # Swap order to place back cover last
-        final_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
-
-    final_doc.save(cover_path, garbage=4, deflate=True)
-    final_doc.close()
-    cover_doc.close()
-
-    if verbose:
-        print(f"[+] Tranche ajoutée avec succès à '{cover_path}'.")
-
-
 # ---------------- création du booklet ----------------
 
-def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
-    """
-    Crée le PDF Cover avec front et back. La tranche est ajoutée après.
-    """
-    if verbose:
-        print(f"[+] Création du PDF couverture (Front/Back) : {cover_path}")
-
-    sdoc, spno_first = first_page_tuple
-    sdoc_last, spno_last = last_page_tuple
-
-    out_doc = fitz.open()
-
-    # Dimensions
-    LEFT_MARGIN_FRONT_MM = 10.0
-    RIGHT_MARGIN_BACK_MM = 10.0
-    OTHER_MARGINS_MM = 32.0
-    
-    a5_w_pt = mm_to_pt(A5_WIDTH_MM)
-    a5_h_pt = mm_to_pt(A5_HEIGHT_MM)
-
-    # Front Page
-    page_front = out_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
-    outer_w_f = a5_w_pt + mm_to_pt(LEFT_MARGIN_FRONT_MM + OTHER_MARGINS_MM)
-    outer_h   = a5_h_pt + mm_to_pt(OTHER_MARGINS_MM * 2)
-    outer_front = fitz.Rect((A4_WIDTH_PT - outer_w_f)/2, (A4_HEIGHT_PT - outer_h)/2,
-                            (A4_WIDTH_PT - outer_w_f)/2 + outer_w_f, (A4_HEIGHT_PT - outer_h)/2 + outer_h)
-    inner_front = outer_front + (mm_to_pt(LEFT_MARGIN_FRONT_MM), mm_to_pt(OTHER_MARGINS_MM),
-                                -mm_to_pt(OTHER_MARGINS_MM), -mm_to_pt(OTHER_MARGINS_MM))
-    page_front.draw_rect(outer_front, color=(0,0,0), width=1.5)
-    place_page_scaled_center(page_front, sdoc, spno_first, inner_front)
-
-    # Back Page
-    page_back = out_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
-    outer_w_b = a5_w_pt + mm_to_pt(RIGHT_MARGIN_BACK_MM + OTHER_MARGINS_MM)
-    outer_back = fitz.Rect((A4_WIDTH_PT - outer_w_b)/2, (A4_HEIGHT_PT - outer_h)/2,
-                           (A4_WIDTH_PT - outer_w_b)/2 + outer_w_b, (A4_HEIGHT_PT - outer_h)/2 + outer_h)
-    inner_back = outer_back + (mm_to_pt(OTHER_MARGINS_MM), mm_to_pt(OTHER_MARGINS_MM),
-                               -mm_to_pt(RIGHT_MARGIN_BACK_MM), -mm_to_pt(OTHER_MARGINS_MM))
-    page_back.draw_rect(outer_back, color=(0,0,0), width=1.5)
-    place_page_scaled_center(page_back, sdoc_last, spno_last, inner_back)
-
-    out_doc.save(cover_path)
-    out_doc.close()
-
 def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter_mm=0.0,
-                       pad_mode="blank", overlap_mm=0.2, scale_mode="fit",
                        creep_mm: float = 0.0,
                        book: bool = False,
-                       verbose=False, debug_rects=False, cover_path=None):
+                       verbose=False):
     in_doc = fitz.open(input_path)
     if in_doc.needs_pass:
         raise RuntimeError("Le PDF d'entrée est protégé / chiffré. Impossible de continuer.")
@@ -478,10 +207,6 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
 
     if book:
         if len(pages) >= 2:
-            first_page = (in_doc, 0)
-            last_page = (in_doc, len(in_doc) - 1)
-            if cover_path:
-                create_cover_pdf(cover_path, first_page, last_page, verbose=verbose)
 
             # Supprimer la première et la dernière page
             pages.pop(0)
@@ -501,6 +226,9 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
         if verbose:
             print(f"[+] Ajout de 2+2 pages blanches pour la reliure (mode --book). Nouveau total : {len(pages)} pages.")
 
+    pad_mode = "blank"
+    scale_mode = "fill"
+    overlap_mm = 0.2
     booklets = split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode=pad_mode)
     if verbose:
         print(f"[+] Booklets à générer: {len(booklets)} sizes: {[len(b) for b in booklets]}")
@@ -563,9 +291,6 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 src_rect = sdoc[spno].rect
                 target_rect = rect_left
                 placed_rect = fit_src_rect_into_target(target_rect, src_rect, scale_mode=scale_mode)
-                if debug_rects:
-                    page_recto.draw_rect(target_rect, color=(0,0,0), width=0.4)
-                    page_recto.draw_rect(placed_rect, color=(1,0,0), width=0.6)
                 page_recto.show_pdf_page(placed_rect, sdoc, spno)
             except Exception as e:
                 if verbose:
@@ -577,9 +302,6 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 src_rect = sdoc[spno].rect
                 target_rect = rect_right
                 placed_rect = fit_src_rect_into_target(target_rect, src_rect, scale_mode=scale_mode)
-                if debug_rects:
-                    page_recto.draw_rect(target_rect, color=(0,0,0), width=0.4)
-                    page_recto.draw_rect(placed_rect, color=(0,0,1), width=0.6)
                 page_recto.show_pdf_page(placed_rect, sdoc, spno)
             except Exception as e:
                 if verbose:
@@ -593,9 +315,6 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 src_rect = sdoc[spno].rect
                 target_rect = rect_left
                 placed_rect = fit_src_rect_into_target(target_rect, src_rect, scale_mode=scale_mode)
-                if debug_rects:
-                    page_verso.draw_rect(target_rect, color=(0,0,0), width=0.4)
-                    page_verso.draw_rect(placed_rect, color=(1,0,0), width=0.6)
                 page_verso.show_pdf_page(placed_rect, sdoc, spno)
             except Exception as e:
                 if verbose:
@@ -606,9 +325,6 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
                 src_rect = sdoc[spno].rect
                 target_rect = rect_right
                 placed_rect = fit_src_rect_into_target(target_rect, src_rect, scale_mode=scale_mode)
-                if debug_rects:
-                    page_verso.draw_rect(target_rect, color=(0,0,0), width=0.4)
-                    page_verso.draw_rect(placed_rect, color=(0,0,1), width=0.6)
                 page_verso.show_pdf_page(placed_rect, sdoc, spno)
             except Exception as e:
                 if verbose:
@@ -631,51 +347,21 @@ def parse_args():
     parser.add_argument("--book", action="store_true", help="Ajoute deux pages blanches recto verso au début et à la fin pour la reliure.")
     parser.add_argument("--paper", type=str, default="A4", help="Paper target (A4 or Letter). Default A4")
     parser.add_argument("--gutter", type=float, default=0.0, help="Gutter (pliure) en mm. Default 0")
-    parser.add_argument("--pad", type=str, choices=["blank", "last"], default="blank", help="Comment padder le dernier carnet. Default blank")
-    parser.add_argument("--overlap-mm", type=float, default=0.2, help="Micro-chevauchement central en mm. Default 0.2")
-    parser.add_argument("--scale-mode", type=str, choices=["fit", "fill"], default="fit", help="fit conserve ratio; fill occupe tout l'espace A5 (déforme)")
     parser.add_argument("--creep", type=float, default=0.0, help="Compensation creep en mm par feuille physique (0 = désactivé).")
-    parser.add_argument("--test", action="store_true", help="Génère un PDF de test et l'utilise comme source (pratique pour calibration).")
-    parser.add_argument("--test-pages", type=int, default=20, help="Nombre de pages pour le PDF de test (default 20).")
-    parser.add_argument("--test-grid", action="store_true", help="Ajoute un quadrillage 1 mm + graduations 10 mm au PDF de test.")
-    parser.add_argument("--debug-rects", action="store_true", help="Dessine rectangles cible/placé (debug).")
-    parser.add_argument("--cover", action="store_true", help="Ajoute une tranche (spine) au fichier de couverture (nécessite --book).")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
 
-    temp_test_path = None
-    if args.test:
-        fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
-        temp_test_path = tmp_path
-        if args.verbose:
-            print(f"[+] Génération d'un PDF de test {tmp_path} ({args.test_pages} pages)...")
-        generate_test_pdf(tmp_path, pages=args.test_pages, paper=args.paper, grid=args.test_grid)
-        input_path = tmp_path
-        if args.output is None:
-            outp = Path(f"Test - Booklet.pdf")
-        else:
-            outp = Path(args.output)
+    if args.input is None:
+        print("Fichier d'entrée requis.")
+        sys.exit(2)
+    input_path = args.input
+    if args.output is None:
+        outp = Path(Path(input_path).stem + " - Booklet.pdf")
     else:
-        if args.input is None:
-            print("Fichier d'entrée requis si --test n'est pas utilisé.")
-            sys.exit(2)
-        input_path = args.input
-        if args.output is None:
-            outp = Path(Path(input_path).stem + " - Booklet.pdf")
-        else:
-            outp = Path(args.output)
-
-    cover_outp = None
-    if args.book:
-        stem = outp.stem
-        if stem.endswith(" - Booklet"):
-            stem = stem[:-9]
-        cover_outp = outp.with_name(stem + " - Cover.pdf")
-
+        outp = Path(args.output)
 
     if args.signature % 4 != 0:
         print("La signature doit être multiple de 4.")
@@ -684,8 +370,6 @@ if __name__ == "__main__":
     if args.verbose:
         print(f"[+] input_path = {input_path}")
         print(f"[+] output_path = {outp}")
-        if cover_outp:
-            print(f"[+] cover_output_path = {cover_outp}")
 
     try:
         create_booklet_pdf(
@@ -694,36 +378,13 @@ if __name__ == "__main__":
             paper=args.paper,
             signature=args.signature,
             gutter_mm=args.gutter,
-            pad_mode=args.pad,
-            overlap_mm=args.overlap_mm,
-            scale_mode=args.scale_mode,
             creep_mm=args.creep,
             book=args.book,
-            verbose=args.verbose,
-            debug_rects=args.debug_rects,
-            cover_path=str(cover_outp) if cover_outp else None
+            verbose=args.verbose
         )
     except Exception as exc:
         print("Erreur lors de la génération du booklet :", exc)
         raise
-    finally:
-        if temp_test_path:
-            try:
-                os.remove(temp_test_path)
-            except Exception:
-                pass
-
-    if args.cover and args.book and cover_outp and Path(cover_outp).exists():
-        if args.verbose:
-            print(f"[+] Ajout de la tranche au fichier de couverture : {cover_outp}")
-        try:
-            add_spine_to_cover(
-                cover_path=str(cover_outp),
-                input_filename=Path(input_path).stem,
-                verbose=args.verbose
-            )
-        except Exception as exc:
-            print(f"Erreur lors de l'ajout de la tranche : {exc}")
 
     if args.verbose:
         print("[+] Terminé.")
