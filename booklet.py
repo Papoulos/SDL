@@ -332,30 +332,20 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
     # Create a full A4 page for the spine
     spine_page = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
 
-    # Center the spine element on the A4 page
-    x_offset = (A4_WIDTH_PT - spine_width_pt) / 2
-    y_offset = (A4_HEIGHT_PT - spine_height_pt) / 2
-
-    # Define the spine area
-    spine_rect = fitz.Rect(
-        x_offset,
-        y_offset,
-        x_offset + spine_width_pt,
-        y_offset + spine_height_pt
-    )
-
-    # Margins de 3.2cm relative to the spine area
+    # 1. Draw the 3.2cm cutting guide margin on the A4 page
     margin_pt = mm_to_pt(32)
-    border_rect = fitz.Rect(
-        spine_rect.x0 + margin_pt,
-        spine_rect.y0 + margin_pt,
-        spine_rect.x1 - margin_pt,
-        spine_rect.y1 - margin_pt
-    )
-    spine_page.draw_rect(border_rect, color=(0.8, 0.8, 0.8), width=0.5)
+    cutting_guide_rect = fitz.Rect(margin_pt, margin_pt, A4_WIDTH_PT - margin_pt, A4_HEIGHT_PT - margin_pt)
+    spine_page.draw_rect(cutting_guide_rect, color=(0.85, 0.85, 0.85), width=0.5)
 
-    # Text properties
-    drawable_height = border_rect.height
+    # 2. Define the spine element rectangle, centered horizontally on the A4 page
+    x_offset = (A4_WIDTH_PT - spine_width_pt) / 2
+    spine_element_rect = fitz.Rect(x_offset, 0, x_offset + spine_width_pt, spine_height_pt)
+
+    # Optional: Draw a light background for the spine element itself for clarity
+    spine_page.draw_rect(spine_element_rect, color=(0.95, 0.95, 0.95), fill=(0.95, 0.95, 0.95))
+
+    # 3. Prepare for text insertion
+    drawable_height = spine_element_rect.height
     target_text_length = drawable_height * 0.75
     font_buffer = Path(font_path).read_bytes()
 
@@ -364,21 +354,23 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
     fontsize = (target_text_length / text_len_at_size_1) if text_len_at_size_1 > 0 else 12
 
     font_name = "customfont"
-    spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer)
+    # The result is 0 if successful, < 0 on error.
+    if spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer) < 0:
+        raise RuntimeError("Failed to load custom font.")
 
-    text_length = font.text_length(text, fontsize=fontsize)
-    text_height_approx = fontsize
-
-    # Center the text within the spine area
-    p_x = spine_rect.x0 + (spine_rect.width - text_height_approx) / 2
-    p_y = spine_rect.y0 + (spine_rect.height + text_length) / 2
-
-    spine_page.insert_text(
-        fitz.Point(p_x, p_y),
+    # Use a textbox for simpler, more reliable centering and rotation.
+    # The textbox should be rotated, and the text alignment is relative to the *unrotated* box.
+    if spine_element_rect.is_empty or spine_element_rect.is_infinite:
+        raise RuntimeError(f"Invalid spine_element_rect for spine textbox: {spine_element_rect}")
+    if verbose:
+        print(f"[DEBUG] Spine textbox rect: {spine_element_rect}")
+    spine_page.insert_textbox(
+        spine_element_rect,
         text,
         fontname=font_name,
         fontsize=fontsize,
-        rotate=-90
+        rotate=-90,
+        align=fitz.TEXT_ALIGN_CENTER
     )
 
     spine_pdf_bytes = spine_doc.tobytes()
@@ -433,13 +425,16 @@ def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=Fals
     border_rect = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
     page_recto.draw_rect(border_rect, color=(0.8, 0.8, 0.8), width=0.5)
 
-    # Shrink the target rect slightly to create a visual margin
-    inset_value = mm_to_pt(2)
-    image_target_rect = fitz.Rect(border_rect.x0 + inset_value, border_rect.y0 + inset_value,
-                                  border_rect.x1 - inset_value, border_rect.y1 - inset_value)
-
     src_rect = sdoc[spno].rect
-    placed_rect = fit_src_rect_into_target(image_target_rect, src_rect, scale_mode="fit")
+    placed_rect = fit_src_rect_into_target(border_rect, src_rect, scale_mode="fit")
+
+    # Scale the placed rectangle down slightly to ensure a visible margin
+    new_width = placed_rect.width * 0.98
+    new_height = placed_rect.height * 0.98
+    x_offset = (placed_rect.width - new_width) / 2
+    y_offset = (placed_rect.height - new_height) / 2
+    placed_rect = fitz.Rect(placed_rect.x0 + x_offset, placed_rect.y0 + y_offset,
+                              placed_rect.x1 - x_offset, placed_rect.y1 - y_offset)
     page_recto.show_pdf_page(placed_rect, sdoc, spno)
 
     # Page 2: Dos de la couverture
@@ -448,11 +443,14 @@ def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=Fals
     border_rect_verso = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
     page_verso.draw_rect(border_rect_verso, color=(0.8, 0.8, 0.8), width=0.5)
 
-    image_target_rect_verso = fitz.Rect(border_rect_verso.x0 + inset_value, border_rect_verso.y0 + inset_value,
-                                        border_rect_verso.x1 - inset_value, border_rect_verso.y1 - inset_value)
-
     src_rect = sdoc[spno].rect
-    placed_rect = fit_src_rect_into_target(image_target_rect_verso, src_rect, scale_mode="fit")
+    placed_rect = fit_src_rect_into_target(border_rect_verso, src_rect, scale_mode="fit")
+    new_width = placed_rect.width * 0.98
+    new_height = placed_rect.height * 0.98
+    x_offset = (placed_rect.width - new_width) / 2
+    y_offset = (placed_rect.height - new_height) / 2
+    placed_rect = fitz.Rect(placed_rect.x0 + x_offset, placed_rect.y0 + y_offset,
+                                placed_rect.x1 - x_offset, placed_rect.y1 - y_offset)
     page_verso.show_pdf_page(placed_rect, sdoc, spno)
 
     out_doc.save(cover_path)
