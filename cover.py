@@ -175,10 +175,59 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
 
 
 def main():
-    if len(sys.argv) < 4:
-        print("Usage: python cover_generator_asymmetric_v2.py input.pdf config.json output_cover.pdf")
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print("  python cover_generator.py input.pdf [config.json] [output_cover.pdf]")
+        print("")
+        print("Comportement intelligent :")
+        print("  • Si output.pdf n'est pas précisé → nom automatique : 'fichier - cover.pdf'")
+        print("  • Si config.json n'est pas précisé → recherche automatique dans le dossier du PDF ou du script")
         sys.exit(1)
-    make_cover(sys.argv[1], sys.argv[2] if sys.argv[2] != "None" else None, sys.argv[3], verbose=True)
+
+    input_pdf = sys.argv[1]
+
+    # --- Détermination du fichier de sortie ---
+    if len(sys.argv) >= 3 and sys.argv[-1].lower().endswith(".pdf") and os.path.basename(sys.argv[-2]) != "config.json":
+        # Cas : on a donné explicitement un output.pdf
+        output_pdf = sys.argv[-1]
+        config_arg_index = 2 if len(sys.argv) == 4 else None
+    else:
+        # Aucun output donné → on crée "nom du fichier - cover.pdf"
+        base_name = Path(input_pdf).stem
+        output_pdf = f"{base_name} - cover.pdf"
+        config_arg_index = 2 if len(sys.argv) == 3 else None
+        print(f"Aucun nom de sortie → généré automatiquement : {output_pdf}")
+
+    # --- Recherche intelligente du config.json ---
+    config_path = None
+
+    # Si un argument ressemble à un config.json, on le prend
+    if config_arg_index is not None:
+        potential_config = sys.argv[config_arg_index]
+        if os.path.exists(potential_config):
+            config_path = potential_config
+            print(f"Config fourni en argument : {config_path}")
+        else:
+            print(f"Config indiqué introuvable : {potential_config} → recherche automatique")
+
+    # Sinon recherche automatique
+    if config_path is None:
+        pdf_dir = os.path.dirname(input_pdf) or "."
+        script_dir = os.path.dirname(__file__) or "."
+        candidates = [
+            os.path.join(pdf_dir, "config.json"),
+            os.path.join(script_dir, "config.json")
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                config_path = candidate
+                print(f"Config trouvé automatiquement : {candidate}")
+                break
+
+    if config_path is None:
+        print("Aucun config.json trouvé → valeurs par défaut (police Helvetica, tranche 30 mm, titre = nom du fichier)")
+
+    make_cover(input_pdf, config_path, output_pdf, verbose=True)
 
 if __name__ == "__main__":
     main()
