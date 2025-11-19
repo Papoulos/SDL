@@ -344,18 +344,14 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
     page_spine.draw_rect(outer_spine, color=(0,0,0), width=1.5)
     page_spine.draw_rect(spine_rect, color=(0,0,0), width=1)
 
-    custom_font = None
     fontfile = None
     if font_url:
         try:
             fontfile = download_font(font_url, verbose=verbose)
-            custom_font = fitz.Font(fontfile=fontfile)
-            if verbose:
-                print(f"Police custom chargée : {custom_font.name}")
+            if verbose: print(f"Police custom chargée depuis le cache/téléchargement.")
         except Exception as e:
-            if verbose:
-                print("Échec police custom → fallback Helvetica :", e)
-            custom_font = None
+            if verbose: print("Échec police custom → fallback Helvetica :", e)
+            fontfile = None
 
     padding = mm_to_pt(5)
     text_rect = spine_rect + (padding, padding, -padding, -padding)
@@ -367,8 +363,8 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
                 text_rect,
                 spine_text,
                 fontsize=fontsize,
-                fontname="helv" if custom_font is None else "CustomFont",
-                fontfile=fontfile if custom_font else None,
+                fontname="helv" if not fontfile else "CustomFont",
+                fontfile=fontfile,
                 align=fitz.TEXT_ALIGN_CENTER,
                 rotate=90,
                 color=(0,0,0)
