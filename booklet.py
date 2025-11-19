@@ -49,6 +49,8 @@ def mm_to_pt(mm: float) -> float:
 # Papier portrait (points)
 A4_WIDTH_PT = 595.276
 A4_HEIGHT_PT = 841.89
+A5_WIDTH_MM = 148.0
+A5_HEIGHT_MM = 210.0
 LETTER_WIDTH_PT = 612.0
 LETTER_HEIGHT_PT = 792.0
 
@@ -255,6 +257,16 @@ def split_into_booklets_minimize_last(pages, signature, blank_doc, pad_mode="bla
         out.append(chunk)
     return out
 
+def place_page_scaled_center(dest_page, src_doc, src_pno, target_rect):
+    src_page = src_doc[src_pno]
+    src_rect = src_page.rect
+    scale = min(target_rect.width / src_rect.width, target_rect.height / src_rect.height)
+    new_w = src_rect.width * scale
+    new_h = src_rect.height * scale
+    x = target_rect.x0 + (target_rect.width - new_w) / 2
+    y = target_rect.y0 + (target_rect.height - new_h) / 2
+    dest_page.show_pdf_page(fitz.Rect(x, y, x + new_w, y + new_h), src_doc, src_pno)
+
 def imposation_for_signature(signature):
     if signature % 4 != 0:
         raise ValueError("signature must be multiple of 4")
@@ -310,98 +322,65 @@ def download_font(url, verbose=False):
         raise RuntimeError(f"Erreur lors du téléchargement de la police : {e}")
 
 def add_spine_to_cover(cover_path, input_filename, verbose=False):
-    """
-    Génère la tranche avec :
-    - Un cadre noir visible (overlay=True).
-    - Marge haut/bas de 3,2 cm.
-    - Texte centré verticalement et horizontalement (via textbox contraint).
-    """
     config = load_config(verbose=verbose)
-    
-    # --- 1. Chargement Police ---
-    try:
-        font_path = download_font(config.get("font_url"), verbose=verbose)
-        font_buffer = Path(font_path).read_bytes()
-        font_name = "customfont"
-        has_custom_font = True
-    except Exception:
-        if verbose: print("[!] Fallback sur Helvetica pour la tranche.")
-        font_name = "helv"
-        has_custom_font = False
 
-    # --- 2. Dimensions Tranche ---
-    spine_width_mm = config.get("spine_width_mm", 20)
-    text = config.get("text", "")
-    if not text:
-        text = input_filename.replace('_', ' ').replace('-', ' ')
+    spine_width_mm = float(config.get("spine_width_mm", 30))
+    spine_text = (config.get("text") or "").strip() or Path(input_filename).stem
+    font_url = config.get("font_url")
 
-    spine_width_pt = mm_to_pt(spine_width_mm)
-    
-    # Marges haut/bas de 3,2 cm
-    margin_h_mm = 32.0
-    margin_h_pt = mm_to_pt(margin_h_mm)
-    
-    # Hauteur disponible pour le cadre
-    rect_h_pt = A4_HEIGHT_PT - (2 * margin_h_pt)
+    a5_h_pt = mm_to_pt(A5_HEIGHT_MM)
+    SPINE_MARGIN_MM = 32.0
 
     spine_doc = fitz.open()
-    spine_page = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    page_spine = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    spine_w_pt = mm_to_pt(spine_width_mm)
+    spine_rect = fitz.Rect(A4_WIDTH_PT/2 - spine_w_pt/2,
+                           A4_HEIGHT_PT/2 - a5_h_pt/2,
+                           A4_WIDTH_PT/2 + spine_w_pt/2,
+                           A4_HEIGHT_PT/2 + a5_h_pt/2)
 
-    # --- 3. Rectangle du Cadre de la Tranche ---
-    # Centré horizontalement sur la page A4
-    cx = A4_WIDTH_PT / 2
-    x0 = cx - (spine_width_pt / 2)
-    x1 = cx + (spine_width_pt / 2)
-    
-    y0 = margin_h_pt
-    y1 = y0 + rect_h_pt
-    
-    spine_rect = fitz.Rect(x0, y0, x1, y1)
+    outer_spine = spine_rect + (-mm_to_pt(SPINE_MARGIN_MM), -mm_to_pt(SPINE_MARGIN_MM),
+                                mm_to_pt(SPINE_MARGIN_MM), mm_to_pt(SPINE_MARGIN_MM))
+    page_spine.draw_rect(outer_spine, color=(0,0,0), width=1.5)
+    page_spine.draw_rect(spine_rect, color=(0,0,0), width=1)
 
-    # DESSIN DU CADRE : On utilise overlay=True pour être sûr qu'il est au-dessus
-    spine_page.draw_rect(spine_rect, color=(0, 0, 0), width=1.0, overlay=True)
+    fontfile = None
+    if font_url:
+        try:
+            fontfile = download_font(font_url, verbose=verbose)
+            if verbose: print(f"Police custom chargée depuis le cache/téléchargement.")
+        except Exception as e:
+            if verbose: print("Échec police custom → fallback Helvetica :", e)
+            fontfile = None
 
-    # --- 4. Calcul Taille Police ---
-    # Cible : 75% de la hauteur disponible
-    target_len = rect_h_pt * 0.75
+    padding = mm_to_pt(5)
+    text_rect = spine_rect + (padding, padding, -padding, -padding)
 
-    if has_custom_font:
-        spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer)
-        temp_font = fitz.Font(fontbuffer=font_buffer)
+    fontsize = spine_rect.height * 0.75
+    for _ in range(40):
+        try:
+            rc = page_spine.insert_textbox(
+                text_rect,
+                spine_text,
+                fontsize=fontsize,
+                fontname="helv" if not fontfile else "CustomFont",
+                fontfile=fontfile,
+                align=fitz.TEXT_ALIGN_CENTER,
+                rotate=90,
+                color=(0,0,0)
+            )
+            if rc >= 0:
+                break
+        except:
+            pass
+        fontsize *= 0.93
     else:
-        temp_font = fitz.Font("helv")
+        page_spine.insert_textbox(text_rect, spine_text, fontsize=fontsize,
+                                  fontname="helv", align=1, rotate=90, color=0)
 
-    len_at_1 = temp_font.text_length(text, fontsize=1)
-    fontsize = (target_len / len_at_1) if len_at_1 > 0 else 24
-
-    # Sécurité épaisseur (le texte ne doit pas déborder de la largeur de la tranche)
-    max_thickness = spine_width_pt * 0.80
-    if fontsize > max_thickness:
-        fontsize = max_thickness
-
-    # --- 5. Insertion Texte Centré (Méthode Robuste) ---
-    # Pour centrer parfaitement dans l'épaisseur (Axe X page), on définit
-    # un rectangle de textbox très étroit centré sur cx, mais avec rotate=90.
-    # PyMuPDF centrera le texte dans la "hauteur" de ce rectangle (qui est la largeur visuelle).
-    
-    # On définit un rectangle pour le texte qui correspond exactement à la zone de dessin
-    # Mais on peut le restreindre légèrement pour aider l'algo d'alignement
-    text_rect = fitz.Rect(x0, y0, x1, y1)
-
-    spine_page.insert_textbox(
-        text_rect,
-        text,
-        fontsize=fontsize,
-        fontname=font_name,
-        align=1,      # 1 = CENTER (Centre le texte sur la hauteur de la page)
-        rotate=90     # Écrit de bas en haut
-    )
-
-    # Sauvegarde
     spine_pdf_bytes = spine_doc.tobytes()
     spine_doc.close()
 
-    # Fusion
     cover_doc = fitz.open(cover_path)
     final_doc = fitz.open()
     
@@ -412,6 +391,7 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
     final_doc.insert_pdf(spine_inserter)
     
     if cover_doc.page_count >= 2:
+        # Swap order to place back cover last
         final_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
 
     final_doc.save(cover_path, garbage=4, deflate=True)
@@ -426,63 +406,44 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
 
 def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
     """
-    Crée le PDF Cover avec marges strictes demandées :
-    - Front : Gauche=1cm, Droite=3.2cm, Haut/Bas=3.2cm
-    - Back  : Droite=1cm, Gauche=3.2cm, Haut/Bas=3.2cm
+    Crée le PDF Cover avec front et back. La tranche est ajoutée après.
     """
     if verbose:
-        print(f"[+] Création du PDF couverture : {cover_path}")
+        print(f"[+] Création du PDF couverture (Front/Back) : {cover_path}")
 
-    w_pt = A4_WIDTH_PT
-    h_pt = A4_HEIGHT_PT
-    
-    # Définition des marges
-    m_large = mm_to_pt(32.0) # 3,2 cm
-    m_small = mm_to_pt(10.0) # 1,0 cm
+    sdoc, spno_first = first_page_tuple
+    sdoc_last, spno_last = last_page_tuple
 
     out_doc = fitz.open()
 
-    def draw_page(page_source, is_front):
-        sdoc, spno = page_source
-        pg = out_doc.new_page(width=w_pt, height=h_pt)
-        
-        # Calcul des coordonnées du cadre
-        if is_front:
-            # Front (Page de droite) : Reliure à Gauche (1cm)
-            x0 = m_small             # 10mm
-            y0 = m_large             # 32mm
-            x1 = w_pt - m_large      # A4 - 32mm
-            y1 = h_pt - m_large      # A4 - 32mm
-        else:
-            # Back (Page de gauche) : Reliure à Droite (1cm)
-            x0 = m_large             # 32mm
-            y0 = m_large             # 32mm
-            x1 = w_pt - m_small      # A4 - 10mm
-            y1 = h_pt - m_large      # A4 - 32mm
-            
-        border_rect = fitz.Rect(x0, y0, x1, y1)
-        
-        # 1. Dessin du cadre noir
-        pg.draw_rect(border_rect, color=(0, 0, 0), width=1.0)
-        
-        # 2. Placement de l'image (padding interne 1mm)
-        pad = mm_to_pt(1.0)
-        safe_rect = fitz.Rect(
-            border_rect.x0 + pad, 
-            border_rect.y0 + pad, 
-            border_rect.x1 - pad, 
-            border_rect.y1 - pad
-        )
-        
-        src_rect = sdoc[spno].rect
-        placed_rect = fit_src_rect_into_target(safe_rect, src_rect, scale_mode="fit")
-        pg.show_pdf_page(placed_rect, sdoc, spno)
-
-    # Page 1 : Front
-    draw_page(first_page_tuple, is_front=True)
+    # Dimensions
+    LEFT_MARGIN_FRONT_MM = 10.0
+    RIGHT_MARGIN_BACK_MM = 10.0
+    OTHER_MARGINS_MM = 32.0
     
-    # Page 2 : Back
-    draw_page(last_page_tuple, is_front=False)
+    a5_w_pt = mm_to_pt(A5_WIDTH_MM)
+    a5_h_pt = mm_to_pt(A5_HEIGHT_MM)
+
+    # Front Page
+    page_front = out_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    outer_w_f = a5_w_pt + mm_to_pt(LEFT_MARGIN_FRONT_MM + OTHER_MARGINS_MM)
+    outer_h   = a5_h_pt + mm_to_pt(OTHER_MARGINS_MM * 2)
+    outer_front = fitz.Rect((A4_WIDTH_PT - outer_w_f)/2, (A4_HEIGHT_PT - outer_h)/2,
+                            (A4_WIDTH_PT - outer_w_f)/2 + outer_w_f, (A4_HEIGHT_PT - outer_h)/2 + outer_h)
+    inner_front = outer_front + (mm_to_pt(LEFT_MARGIN_FRONT_MM), mm_to_pt(OTHER_MARGINS_MM),
+                                -mm_to_pt(OTHER_MARGINS_MM), -mm_to_pt(OTHER_MARGINS_MM))
+    page_front.draw_rect(outer_front, color=(0,0,0), width=1.5)
+    place_page_scaled_center(page_front, sdoc, spno_first, inner_front)
+
+    # Back Page
+    page_back = out_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    outer_w_b = a5_w_pt + mm_to_pt(RIGHT_MARGIN_BACK_MM + OTHER_MARGINS_MM)
+    outer_back = fitz.Rect((A4_WIDTH_PT - outer_w_b)/2, (A4_HEIGHT_PT - outer_h)/2,
+                           (A4_WIDTH_PT - outer_w_b)/2 + outer_w_b, (A4_HEIGHT_PT - outer_h)/2 + outer_h)
+    inner_back = outer_back + (mm_to_pt(OTHER_MARGINS_MM), mm_to_pt(OTHER_MARGINS_MM),
+                               -mm_to_pt(RIGHT_MARGIN_BACK_MM), -mm_to_pt(OTHER_MARGINS_MM))
+    page_back.draw_rect(outer_back, color=(0,0,0), width=1.5)
+    place_page_scaled_center(page_back, sdoc_last, spno_last, inner_back)
 
     out_doc.save(cover_path)
     out_doc.close()
