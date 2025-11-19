@@ -311,92 +311,132 @@ def download_font(url, verbose=False):
 
 def add_spine_to_cover(cover_path, input_filename, verbose=False):
     """
-    Génère la tranche et l'ajoute au PDF de couverture existant.
+    Génère la tranche (A4 avec rectangle taille A5 centré) et l'insère au milieu du PDF cover.
     """
     config = load_config(verbose=verbose)
-    font_path = download_font(config.get("font_url"), verbose=verbose)
+    
+    # Tentative de chargement de police, sinon fallback sur Helvetica
+    try:
+        font_path = download_font(config.get("font_url"), verbose=verbose)
+        has_custom_font = True
+    except Exception as e:
+        if verbose:
+            print(f"[!] Impossible de charger la police custom ({e}), utilisation Helvetica.")
+        has_custom_font = False
+        font_path = None
 
     spine_width_mm = config.get("spine_width_mm", 20)
+    
+    # Texte : priorité au config.json, sinon nom du fichier nettoyé
     text = config.get("text", "")
     if not text:
         text = input_filename.replace('_', ' ').replace('-', ' ')
 
     if verbose:
-        print(f"[+] Génération de la tranche: texte='{text}', largeur={spine_width_mm}mm")
+        print(f"[+] Génération tranche: texte='{text}', largeur={spine_width_mm}mm, hauteur=A5 (210mm)")
 
-    # Spine dimensions
+    # Dimensions
     spine_width_pt = mm_to_pt(spine_width_mm)
-    spine_height_pt = A4_HEIGHT_PT # Full A4 height for the spine area
+    
+    # HAUTEUR A5 pour le rectangle de la tranche (210mm)
+    spine_height_mm = 210.0 
+    spine_height_pt = mm_to_pt(spine_height_mm)
 
     spine_doc = fitz.open()
-    # Create a full A4 page for the spine
+    # Création page A4 (conteneur)
     spine_page = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
 
-    # 1. Draw the 3.2cm cutting guide margin on the A4 page
-    margin_pt = mm_to_pt(32)
-    cutting_guide_rect = fitz.Rect(margin_pt, margin_pt, A4_WIDTH_PT - margin_pt, A4_HEIGHT_PT - margin_pt)
-    spine_page.draw_rect(cutting_guide_rect, color=(0.85, 0.85, 0.85), width=0.5)
+    # 1. Calcul des coordonnées pour centrer le rectangle A5 (Tranche) dans la page A4
+    # Centrage Horizontal
+    x0 = (A4_WIDTH_PT - spine_width_pt) / 2
+    x1 = x0 + spine_width_pt
+    
+    # Centrage Vertical (La tranche fait 210mm de haut sur une page de 297mm)
+    y0 = (A4_HEIGHT_PT - spine_height_pt) / 2
+    y1 = y0 + spine_height_pt
+    
+    spine_rect = fitz.Rect(x0, y0, x1, y1)
 
-    # 2. Define the spine element rectangle, centered horizontally on the A4 page
-    x_offset = (A4_WIDTH_PT - spine_width_pt) / 2
-    spine_element_rect = fitz.Rect(x_offset, 0, x_offset + spine_width_pt, spine_height_pt)
+    # 2. Dessiner le rectangle de la tranche (fond très léger pour visualiser, contour fin)
+    spine_page.draw_rect(spine_rect, color=(0, 0, 0), fill=(0.95, 0.95, 0.95), width=0.5)
+    
+    # Ajout de repères de coupe (optionnel, pour aider à visualiser les limites A5)
+    # Haut
+    spine_page.draw_line((x0 - 10, y0), (x1 + 10, y0), color=(0.5,0.5,0.5), width=0.3)
+    # Bas
+    spine_page.draw_line((x0 - 10, y1), (x1 + 10, y1), color=(0.5,0.5,0.5), width=0.3)
 
-    # Optional: Draw a light background for the spine element itself for clarity
-    spine_page.draw_rect(spine_element_rect, color=(0.95, 0.95, 0.95), fill=(0.95, 0.95, 0.95))
+    # 3. Insertion du texte
+    # Le texte doit être tourné de -90 degrés (bas vers haut) ou 90 (haut vers bas).
+    # Pour "Booklet", on lit souvent de bas en haut (-90).
+    
+    font_name = "helv"
+    fontsize = 12
 
-    # 3. Prepare for text insertion
-    drawable_height = spine_element_rect.height
-    target_text_length = drawable_height * 0.75
-    font_buffer = Path(font_path).read_bytes()
+    if has_custom_font and font_path:
+        try:
+            font_buffer = Path(font_path).read_bytes()
+            font_name = "customfont"
+            spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer)
+            
+            # Calcul dynamique de la taille de police pour remplir ~80% de la hauteur dispo
+            temp_font = fitz.Font(fontbuffer=font_buffer)
+            text_len_1 = temp_font.text_length(text, fontsize=1)
+            if text_len_1 > 0:
+                # On vise 80% de la hauteur de la tranche (210mm)
+                target_len = spine_height_pt * 0.8
+                fontsize = target_len / text_len_1
+        except Exception as e:
+            print(f"[!] Erreur calcul police custom: {e}, fallback.")
+            font_name = "helv"
+            fontsize = 24
+    else:
+        # Fallback simple
+        fontsize = 24
 
-    font = fitz.Font(fontbuffer=font_buffer)
-    text_len_at_size_1 = font.text_length(text, fontsize=1)
-    fontsize = (target_text_length / text_len_at_size_1) if text_len_at_size_1 > 0 else 12
-
-    font_name = "customfont"
-    # The result is 0 if successful, < 0 on error.
-    if spine_page.insert_font(fontname=font_name, fontbuffer=font_buffer) < 0:
-        raise RuntimeError("Failed to load custom font.")
-
-    # Use a textbox for simpler, more reliable centering and rotation.
-    # The textbox should be rotated, and the text alignment is relative to the *unrotated* box.
-    if spine_element_rect.is_empty or spine_element_rect.is_infinite:
-        raise RuntimeError(f"Invalid spine_element_rect for spine textbox: {spine_element_rect}")
-    if verbose:
-        print(f"[DEBUG] Spine textbox rect: {spine_element_rect}")
-    spine_page.insert_textbox(
-        spine_element_rect,
+    # Insertion via textbox qui gère mieux le centrage avec rotation
+    # Note: rotate=90 tourne le contenu de 90 degres sens horaire par rapport au rectangle.
+    # Pour lire du bas vers le haut, rotate=90 dans un repère PDF standard fonctionne souvent bien
+    # ou alors rotate=-90. Testons -90 (standard livre fr).
+    
+    res = spine_page.insert_textbox(
+        spine_rect,
         text,
-        fontname=font_name,
         fontsize=fontsize,
-        rotate=-90,
-        align=fitz.TEXT_ALIGN_CENTER
+        fontname=font_name,
+        align=fitz.TEXT_ALIGN_CENTER,
+        rotate=90  # 90 degrés : le texte monte. Utilisez -90 si vous voulez qu'il descende.
     )
+    
+    if res < 0:
+        if verbose: print(f"[!] Textbox trop petit pour le texte à la taille {fontsize}")
 
     spine_pdf_bytes = spine_doc.tobytes()
     spine_doc.close()
 
-    # Merge with the cover file
+    # Fusion avec le cover
     if verbose:
         print(f"[+] Fusion de la tranche avec {cover_path}")
 
     cover_doc = fitz.open(cover_path)
     if cover_doc.page_count != 2:
-        print(f"[!] Le fichier de couverture '{cover_path}' n'a pas 2 pages. Abandon.")
-        cover_doc.close()
-        return
+        print(f"[!] Le fichier cover '{cover_path}' n'a pas 2 pages exactes.")
+        # On continue quand même pour insérer au milieu
+    
+    final_doc = fitz.open()
+    # Page 1 (Front)
+    final_doc.insert_pdf(cover_doc, from_page=0, to_page=0)
+    
+    # Page 2 (Spine)
+    spine_inserter = fitz.open("pdf", spine_pdf_bytes)
+    final_doc.insert_pdf(spine_inserter)
+    
+    # Page 3 (Back)
+    if cover_doc.page_count > 1:
+        final_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
 
-    final_cover_doc = fitz.open()
-    final_cover_doc.insert_pdf(cover_doc, from_page=0, to_page=0)
-
-    spine_inserter_doc = fitz.open("pdf", spine_pdf_bytes)
-    final_cover_doc.insert_pdf(spine_inserter_doc)
-
-    final_cover_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
-
-    # Save over the original cover file
-    final_cover_doc.save(cover_path, garbage=4, deflate=True)
-    final_cover_doc.close()
+    final_doc.save(cover_path, garbage=4, deflate=True)
+    final_doc.close()
     cover_doc.close()
 
     if verbose:
@@ -407,51 +447,54 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
 
 def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
     """
-    Crée un PDF A4 pour les couvertures avec un cadre de 3.2 cm.
+    Crée un PDF A4 pour les couvertures avec un cadre strict de 3.2 cm.
     """
     if verbose:
-        print(f"[+] Création du PDF pour les couvertures : {cover_path}")
+        print(f"[+] Création du PDF couverture : {cover_path}")
 
     w_pt = A4_WIDTH_PT
     h_pt = A4_HEIGHT_PT
-    margin_cm = 3.2
-    margin_pt = mm_to_pt(margin_cm * 10)
+    
+    # 3.2 cm de marge exacte
+    margin_mm = 32.0 
+    margin_pt = mm_to_pt(margin_mm)
+
+    # Définition du rectangle strict du cadre (le "Border")
+    # x0, y0, x1, y1
+    border_rect = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
 
     out_doc = fitz.open()
 
+    def process_cover_page(page_source_tuple):
+        sdoc, spno = page_source_tuple
+        pg = out_doc.new_page(width=w_pt, height=h_pt)
+        
+        # 1. Dessiner le cadre (le "trait") exactement sur les limites calculées
+        pg.draw_rect(border_rect, color=(0, 0, 0), width=1.0)
+        
+        # 2. Placer le PDF source À L'INTÉRIEUR du cadre
+        # On ajoute un micro-padding (ex: 2mm) à l'intérieur du cadre pour que l'image ne touche pas le trait noir
+        padding_inner = mm_to_pt(2.0)
+        safe_rect = fitz.Rect(
+            border_rect.x0 + padding_inner,
+            border_rect.y0 + padding_inner,
+            border_rect.x1 - padding_inner,
+            border_rect.y1 - padding_inner
+        )
+
+        src_rect = sdoc[spno].rect
+        
+        # Calcul du rectangle de destination en conservant le ratio (fit)
+        # L'image sera centrée dans le "safe_rect"
+        placed_rect = fit_src_rect_into_target(safe_rect, src_rect, scale_mode="fit")
+        
+        pg.show_pdf_page(placed_rect, sdoc, spno)
+
     # Page 1: Couverture avant
-    sdoc, spno = first_page_tuple
-    page_recto = out_doc.new_page(width=w_pt, height=h_pt)
-    border_rect = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
-    page_recto.draw_rect(border_rect, color=(0.8, 0.8, 0.8), width=0.5)
+    process_cover_page(first_page_tuple)
 
-    src_rect = sdoc[spno].rect
-    placed_rect = fit_src_rect_into_target(border_rect, src_rect, scale_mode="fit")
-
-    # Scale the placed rectangle down slightly to ensure a visible margin
-    new_width = placed_rect.width * 0.98
-    new_height = placed_rect.height * 0.98
-    x_offset = (placed_rect.width - new_width) / 2
-    y_offset = (placed_rect.height - new_height) / 2
-    placed_rect = fitz.Rect(placed_rect.x0 + x_offset, placed_rect.y0 + y_offset,
-                              placed_rect.x1 - x_offset, placed_rect.y1 - y_offset)
-    page_recto.show_pdf_page(placed_rect, sdoc, spno)
-
-    # Page 2: Dos de la couverture
-    sdoc, spno = last_page_tuple
-    page_verso = out_doc.new_page(width=w_pt, height=h_pt)
-    border_rect_verso = fitz.Rect(margin_pt, margin_pt, w_pt - margin_pt, h_pt - margin_pt)
-    page_verso.draw_rect(border_rect_verso, color=(0.8, 0.8, 0.8), width=0.5)
-
-    src_rect = sdoc[spno].rect
-    placed_rect = fit_src_rect_into_target(border_rect_verso, src_rect, scale_mode="fit")
-    new_width = placed_rect.width * 0.98
-    new_height = placed_rect.height * 0.98
-    x_offset = (placed_rect.width - new_width) / 2
-    y_offset = (placed_rect.height - new_height) / 2
-    placed_rect = fitz.Rect(placed_rect.x0 + x_offset, placed_rect.y0 + y_offset,
-                                placed_rect.x1 - x_offset, placed_rect.y1 - y_offset)
-    page_verso.show_pdf_page(placed_rect, sdoc, spno)
+    # Page 2: Dos de la couverture (Last page)
+    process_cover_page(last_page_tuple)
 
     out_doc.save(cover_path)
     out_doc.close()
