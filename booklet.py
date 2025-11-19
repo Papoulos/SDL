@@ -49,8 +49,8 @@ def mm_to_pt(mm: float) -> float:
 # Papier portrait (points)
 A4_WIDTH_PT = 595.276
 A4_HEIGHT_PT = 841.89
-A5_WIDTH_PT = 420.945
-A5_HEIGHT_PT = 595.276
+A5_WIDTH_MM = 148.0
+A5_HEIGHT_MM = 210.0
 LETTER_WIDTH_PT = 612.0
 LETTER_HEIGHT_PT = 792.0
 
@@ -322,61 +322,39 @@ def download_font(url, verbose=False):
         raise RuntimeError(f"Erreur lors du téléchargement de la police : {e}")
 
 def add_spine_to_cover(cover_path, input_filename, verbose=False):
-    """
-    Génère la tranche sur une page A4 séparée et l'insère dans le PDF de couverture.
-    - La tranche est un rectangle de hauteur A5.
-    - Un cadre de coupe est dessiné à 3.2 cm autour de la tranche.
-    - Le texte est centré verticalement et occupe 3/4 de la hauteur.
-    """
     config = load_config(verbose=verbose)
-    
-    # --- 1. Chargement Police ---
-    try:
-        font_path = download_font(config.get("font_url"), verbose=verbose)
-        font_buffer = Path(font_path).read_bytes()
-        font_name = "customfont"
-        has_custom_font = True
-    except Exception:
-        if verbose: print("[!] Fallback sur Helvetica pour la tranche.")
-        font_name = "helv"
-        has_custom_font = False
-
-    # --- 2. Dimensions et Texte ---
-    spine_width_mm = config.get("spine_width_mm", 20)
-    text = config.get("text", "")
-    if not text:
-        text = input_filename.replace('_', ' ').replace('-', ' ')
-
-    spine_width_pt = mm_to_pt(spine_width_mm)
-    spine_height_pt = A5_HEIGHT_PT # Hauteur d'une feuille A5
 
     spine_width_mm = float(config.get("spine_width_mm", 30))
     spine_text = (config.get("text") or "").strip() or Path(input_filename).stem
     font_url = config.get("font_url")
 
-    # --- 3. Géométrie des Cadres ---
-    # Centrer le rectangle de la tranche (hauteur A5) sur la page A4
-    spine_x0 = (A4_WIDTH_PT - spine_width_pt) / 2
-    spine_y0 = (A4_HEIGHT_PT - spine_height_pt) / 2
-    spine_x1 = spine_x0 + spine_width_pt
-    spine_y1 = spine_y0 + spine_height_pt
-    spine_rect = fitz.Rect(spine_x0, spine_y0, spine_x1, spine_y1)
+    a5_h_pt = mm_to_pt(A5_HEIGHT_MM)
+    SPINE_MARGIN_MM = 32.0
 
-    # Créer le cadre de coupe à 3.2 cm autour du rectangle de la tranche
-    margin_pt = mm_to_pt(32.0)
-    guide_rect = fitz.Rect(
-        spine_rect.x0 - margin_pt,
-        spine_rect.y0 - margin_pt,
-        spine_rect.x1 + margin_pt,
-        spine_rect.y1 + margin_pt
-    )
+    spine_doc = fitz.open()
+    page_spine = spine_doc.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    spine_w_pt = mm_to_pt(spine_width_mm)
+    spine_rect = fitz.Rect(A4_WIDTH_PT/2 - spine_w_pt/2,
+                           A4_HEIGHT_PT/2 - a5_h_pt/2,
+                           A4_WIDTH_PT/2 + spine_w_pt/2,
+                           A4_HEIGHT_PT/2 + a5_h_pt/2)
 
-    # --- 4. Dessin des Cadres ---
-    spine_page.draw_rect(guide_rect, color=(0, 0, 0), width=0.5) # Cadre de coupe
-    spine_page.draw_rect(spine_rect, color=(0, 0, 0), width=1.0) # Cadre de la tranche
+    outer_spine = spine_rect + (-mm_to_pt(SPINE_MARGIN_MM), -mm_to_pt(SPINE_MARGIN_MM),
+                                mm_to_pt(SPINE_MARGIN_MM), mm_to_pt(SPINE_MARGIN_MM))
+    page_spine.draw_rect(outer_spine, color=(0,0,0), width=1.5)
+    page_spine.draw_rect(spine_rect, color=(0,0,0), width=1)
 
-    # --- 5. Calcul Taille Police ---
-    target_len = spine_height_pt * 0.75 # 3/4 de la hauteur A5
+    fontfile = None
+    if font_url:
+        try:
+            fontfile = download_font(font_url, verbose=verbose)
+            if verbose: print(f"Police custom chargée depuis le cache/téléchargement.")
+        except Exception as e:
+            if verbose: print("Échec police custom → fallback Helvetica :", e)
+            fontfile = None
+
+    padding = mm_to_pt(5)
+    text_rect = spine_rect + (padding, padding, -padding, -padding)
 
     fontsize = spine_rect.height * 0.75
     for _ in range(40):
@@ -397,43 +375,21 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
             pass
         fontsize *= 0.93
     else:
-        temp_font = fitz.Font("helv")
+        page_spine.insert_textbox(text_rect, spine_text, fontsize=fontsize,
+                                  fontname="helv", align=1, rotate=90, color=0)
 
-    # Calcul de la taille de police pour atteindre la longueur cible
-    len_at_1 = temp_font.text_length(text, fontsize=1)
-    fontsize = (target_len / len_at_1) if len_at_1 > 0 else 24
-
-    # Limiter l'épaisseur du texte pour qu'il ne dépasse pas la largeur de la tranche
-    max_thickness = spine_width_pt * 0.80
-    if fontsize > max_thickness:
-        fontsize = max_thickness
-
-    # --- 6. Insertion du Texte ---
-    spine_page.insert_textbox(
-        spine_rect,
-        text,
-        fontsize=fontsize,
-        fontname=font_name,
-        align=1,  # Centrer
-        rotate=90 # Vertical
-    )
-
-    # --- 7. Sauvegarde et Fusion ---
     spine_pdf_bytes = spine_doc.tobytes()
     spine_doc.close()
 
     cover_doc = fitz.open(cover_path)
     final_doc = fitz.open()
     
-    # Page 1: Front cover
     if cover_doc.page_count >= 1:
         final_doc.insert_pdf(cover_doc, from_page=0, to_page=0)
     
-    # Page 2: Spine
     spine_inserter = fitz.open("pdf", spine_pdf_bytes)
     final_doc.insert_pdf(spine_inserter)
     
-    # Page 3: Back cover
     if cover_doc.page_count >= 2:
         # Swap order to place back cover last
         final_doc.insert_pdf(cover_doc, from_page=1, to_page=1)
@@ -450,74 +406,20 @@ def add_spine_to_cover(cover_path, input_filename, verbose=False):
 
 def create_cover_pdf(cover_path, first_page_tuple, last_page_tuple, verbose=False):
     """
-    Crée le PDF Cover avec les nouvelles instructions :
-    - Redimensionne la page source en A5.
-    - Crée un cadre sur une page A4 avec des marges spécifiques.
-    - Centre le cadre sur la page A4.
-    - Centre le contenu A5 à l'intérieur du cadre.
+    Crée le PDF Cover avec front et back. La tranche est ajoutée après.
     """
     if verbose:
         print(f"[+] Création du PDF couverture (Front/Back) : {cover_path}")
 
-    w_pt = A4_WIDTH_PT
-    h_pt = A4_HEIGHT_PT
-    
-    m_large = mm_to_pt(32.0)
-    m_small = mm_to_pt(10.0)
+    sdoc, spno_first = first_page_tuple
+    sdoc_last, spno_last = last_page_tuple
 
     out_doc = fitz.open()
 
-    def draw_page(page_source, is_front):
-        sdoc, spno = page_source
-        pg = out_doc.new_page(width=w_pt, height=h_pt)
-        
-        # 1. Redimensionner la page source en A5 en gardant l'aspect ratio
-        src_rect = sdoc[spno].rect
-        scale = min(A5_WIDTH_PT / src_rect.width, A5_HEIGHT_PT / src_rect.height)
-        a5_content_w = src_rect.width * scale
-        a5_content_h = src_rect.height * scale
-
-        # 2. Définir le cadre de coupe sur la page A4
-        if is_front:
-            # Front: 1cm à gauche, 3.2cm à droite
-            frame_w = w_pt - m_small - m_large
-        else:
-            # Back: 1cm à droite, 3.2cm à gauche
-            frame_w = w_pt - m_large - m_small
-
-        frame_h = h_pt - (2 * m_large)
-
-        # 3. Centrer ce cadre sur la page A4
-        frame_x0 = (w_pt - frame_w) / 2
-        frame_y0 = (h_pt - frame_h) / 2
-
-        # Ajustement spécifique pour Front/Back
-        if is_front:
-             frame_x0 = m_small
-        else:
-             frame_x0 = m_large
-
-        frame_x1 = frame_x0 + frame_w
-        frame_y1 = frame_y0 + frame_h
-        
-        border_rect = fitz.Rect(frame_x0, frame_y0, frame_x1, frame_y1)
-
-        # 4. Dessiner le cadre
-        pg.draw_rect(border_rect, color=(0, 0, 0), width=1.0)
-        
-        # 5. Calculer la position pour centrer le contenu A5 à L'INTÉRIEUR du cadre
-        content_x0 = border_rect.x0 + (border_rect.width - a5_content_w) / 2
-        content_y0 = border_rect.y0 + (border_rect.height - a5_content_h) / 2
-        content_x1 = content_x0 + a5_content_w
-        content_y1 = content_y0 + a5_content_h
-        
-        placed_rect = fitz.Rect(content_x0, content_y0, content_x1, content_y1)
-
-        # 6. Afficher la page source dans le rectangle calculé
-        pg.show_pdf_page(placed_rect, sdoc, spno)
-
-    # Page 1 : Front
-    draw_page(first_page_tuple, is_front=True)
+    # Dimensions
+    LEFT_MARGIN_FRONT_MM = 10.0
+    RIGHT_MARGIN_BACK_MM = 10.0
+    OTHER_MARGINS_MM = 32.0
     
     a5_w_pt = mm_to_pt(A5_WIDTH_MM)
     a5_h_pt = mm_to_pt(A5_HEIGHT_MM)
@@ -576,8 +478,8 @@ def create_booklet_pdf(input_path, output_path, paper="A4", signature=16, gutter
 
     if book:
         if len(pages) >= 2:
-            first_page = pages[0]
-            last_page = pages[-1]
+            first_page = (in_doc, 0)
+            last_page = (in_doc, len(in_doc) - 1)
             if cover_path:
                 create_cover_pdf(cover_path, first_page, last_page, verbose=verbose)
 
