@@ -194,7 +194,7 @@ def main():
     else:
         # Aucun output donné → on crée "nom du fichier - cover.pdf"
         base_name = Path(input_pdf).stem
-        output_pdf = f"{base_name} - cover.pdf"
+        output_pdf = f"{base_name} - Cover.pdf"
         config_arg_index = 2 if len(sys.argv) == 3 else None
         print(f"Aucun nom de sortie → généré automatiquement : {output_pdf}")
 
