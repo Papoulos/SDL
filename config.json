@@ -1,5 +1,7 @@
 {
-  "font_url": "https://cdn.jsdelivr.net/npm/roboto-npm-webfont@1.0.1/light/fonts/roboto.ttf",
-  "spine_width_mm": 20,
-  "text": ""
+  "font_url": "https://github.com/google/fonts/blob/f6e3429503c309ac3a8b77b6178a765b2463f702/ofl/macondoswashcaps/MacondoSwashCaps-Regular.ttf",
+  "spine_width_mm": 30,
+  "text": "",
+  "spine_color": "#000000",
+  "text_color": "#ff0000"
 }
