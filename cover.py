@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-cover_generator_no_border_a5.py
-- Redimensionne les pages Front et Back pour qu'elles remplissent exactement un A5 (21 cm × 14,8 cm).
-- Pas de cadre autour des pages.
+cover_generator_a5_stretch.py
+- Redimensionne les pages Front et Back pour qu'elles fassent exactement 21 cm × 14,8 cm (A5), en déformant si nécessaire.
+- Pas de cadre ni de lignes.
 - Crée la zone pour le "spine".
 """
 
@@ -52,25 +52,14 @@ def download_font(url):
         print(f"[!] Erreur font: {e}")
         return None
 
-def place_page_fit_a5(dest_page, src_doc, src_pno, target_rect):
-    """Redimensionne la page source pour qu'elle remplisse exactement la zone A5 (21 cm × 14,8 cm)."""
+def place_page_stretch_a5(dest_page, src_doc, src_pno, target_rect):
+    """Redimensionne la page source pour qu'elle remplisse exactement la zone A5 (21 cm × 14,8 cm), en déformant si nécessaire."""
     src_rect = src_doc[src_pno].rect
     t_w, t_h = target_rect.width, target_rect.height
     src_w, src_h = src_rect.width, src_rect.height
 
-    # Calculer le facteur d'échelle pour remplir exactement la zone A5
-    scale_w = t_w / src_w
-    scale_h = t_h / src_h
-    scale = max(scale_w, scale_h)  # Utilisez max pour remplir la zone (peut tronquer)
-
-    # Centrer le contenu
-    new_w = src_w * scale
-    new_h = src_h * scale
-    x = target_rect.x0 + (t_w - new_w) / 2
-    y = target_rect.y0 + (t_h - new_h) / 2
-
-    # Afficher la page redimensionnée
-    dest_page.show_pdf_page(fitz.Rect(x, y, x + new_w, y + new_h), src_doc, src_pno)
+    # Redimensionner pour remplir exactement la zone A5 (déformation possible)
+    dest_page.show_pdf_page(target_rect, src_doc, src_pno, clip=src_rect, keep_proportion=False)
 
 def make_cover(input_pdf, config_path, output_pdf, verbose=False):
     # --- Config ---
@@ -111,7 +100,7 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
         (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt,
         (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt
     )
-    place_page_fit_a5(page_front, doc, 0, inner_front)
+    place_page_stretch_a5(page_front, doc, 0, inner_front)
 
     # --- Page 2: Back sur A4 portrait ---
     page_back = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
@@ -121,7 +110,7 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
         (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt,
         (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt
     )
-    place_page_fit_a5(page_back, doc, doc.page_count - 1, inner_back)
+    place_page_stretch_a5(page_back, doc, doc.page_count - 1, inner_back)
 
     # --- Page 3: Spine sur A4 portrait ---
     page_spine = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
@@ -244,7 +233,7 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python cover_generator_no_border_a5.py input.pdf [config.json] [output_cover.pdf]")
+        print("Usage: python cover_generator_a5_stretch.py input.pdf [config.json] [output_cover.pdf]")
         sys.exit(1)
 
     input_pdf = sys.argv[1]
