@@ -3,10 +3,12 @@
 """
 cover_generator_centered.py
 Correctifs :
+- Padding_x réduit à 1mm pour tranches étroites (évite erreurs pour spine_width_mm < 20mm).
+- Facteur max_font_height augmenté à 0.85 pour texte plus grand proportionnellement.
+- Ajout de check pour text_rect.width positive ; si négatif, set padding_x=0.
 - Ajout d'une couleur de fond pour le rectangle de la tranche (config: "spine_color" en hex, defaut #FFFFFF blanc).
 - Enregistrement explicite de la police custom via page.insert_font() avant insert_textbox.
 - fontname non-réservé ("spinefont") pour éviter les conflits et NoneType errors.
-- Padding_x réduit à 0 pour tester centrage parfait ; ajuste si besoin (e.g., padding_x = mm2pt(1)).
 - Rectangle fixe pour texte tranche → centrage horizontal parfait, plus de décalage gauche.
 """
 import sys
@@ -134,12 +136,20 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
                 fontfile = None
     # --- CALCUL DE CENTRAGE ---
     # Padding fixe : gauche/droite pour largeur, haut/bas pour longueur
-    padding_x = mm2pt(8)  # Mis à 0 pour centrage parfait ; augmente si trop collé
+    padding_x = mm2pt(1)  # Réduit à 1mm pour tranches étroites
     padding_y = mm2pt(5)  # Padding vertical pour espace
     text_rect = fitz.Rect(spine_rect.x0 + padding_x,
                           spine_rect.y0 + padding_y,
                           spine_rect.x1 - padding_x,
                           spine_rect.y1 - padding_y)
+    # Check pour largeur positive
+    if text_rect.width <= 0:
+        padding_x = 0
+        text_rect = fitz.Rect(spine_rect.x0 + padding_x,
+                              spine_rect.y0 + padding_y,
+                              spine_rect.x1 - padding_x,
+                              spine_rect.y1 - padding_y)
+        if verbose: print("Padding_x set to 0 for narrow spine")
     # Chargement police pour métriques (estimation taille max)
     temp_font = fitz.Font(fontbuffer=open(fontfile, "rb").read()) if fontfile else fitz.Font("helv")
     # Facteur hauteur de ligne (précis)
@@ -148,7 +158,7 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
     except: text_len_1 = 1
     available_height = text_rect.height
     max_font_length = (available_height * 0.9) / text_len_1 if text_len_1 > 0 else 24
-    max_font_height = text_rect.width * 0.65  # 65% de largeur tranche
+    max_font_height = text_rect.width * 0.85  # Augmenté à 0.85 pour texte plus grand
     start_fontsize = min(max_font_height, max_font_length)
     # Insertion
     fontsize = start_fontsize
