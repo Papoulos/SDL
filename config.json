@@ -1,7 +1,8 @@
 {
-  "font_url": "https://github.com/google/fonts/blob/f6e3429503c309ac3a8b77b6178a765b2463f702/ofl/macondoswashcaps/MacondoSwashCaps-Regular.ttf",
-  "spine_width_mm": 30,
+  "font_url": "https://github.com/google/fonts/blob/f6e3429503c309ac3a8b77b6178a765b2463f702/ofl/michroma/Michroma-Regular.ttf",
+  "font_url_HF": "https://github.com/google/fonts/blob/f6e3429503c309ac3a8b77b6178a765b2463f702/ofl/macondoswashcaps/MacondoSwashCaps-Regular.ttf",
+  "spine_width_mm": 15,
   "text": "",
-  "spine_color": "#000000",
-  "text_color": "#ff0000"
+  "spine_color": "#a9c4d1",
+  "text_color": "#000000"
 }
