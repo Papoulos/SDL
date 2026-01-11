@@ -13,7 +13,7 @@ Usage:
     python booklet.py --test [output.pdf] [--test-grid] [--options]
 
 Options:
-    --signature N       pages par carnet (multiple de 4). Default 16
+    --sheets N          feuilles par carnet (1 feuille = 4 pages). Default 4
     --paper A4|Letter   papier cible. Default A4
     --gutter MM         gutter en mm (pliure). Default 0
     --overlap-mm MM     micro-chevauchement central en mm. Default 0.2
@@ -343,7 +343,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Générer un livret (booklet) prêt à imprimer.")
     parser.add_argument("input", nargs="?", help="PDF d'entrée (source A4 attendu). Si --test utilisé, peut être omis.")
     parser.add_argument("output", nargs="?", help="PDF de sortie (optionnel). Si absent -> '<input_stem> - Booklet.pdf' or 'Test - Booklet.pdf' for --test")
-    parser.add_argument("--signature", type=int, default=16, help="Pages par carnet (multiple de 4). Default 16")
+    parser.add_argument("--sheets", type=int, default=4, help="Feuilles par carnet (1 feuille = 4 pages). Default 4")
     parser.add_argument("--book", action="store_true", help="Ajoute deux pages blanches recto verso au début et à la fin pour la reliure.")
     parser.add_argument("--paper", type=str, default="A4", help="Paper target (A4 or Letter). Default A4")
     parser.add_argument("--gutter", type=float, default=0.0, help="Gutter (pliure) en mm. Default 0")
@@ -363,20 +363,17 @@ if __name__ == "__main__":
     else:
         outp = Path(args.output)
 
-    if args.signature % 4 != 0:
-        print("La signature doit être multiple de 4.")
-        sys.exit(2)
-
     if args.verbose:
         print(f"[+] input_path = {input_path}")
         print(f"[+] output_path = {outp}")
 
     try:
+        sheets_pages = args.sheets * 4
         create_booklet_pdf(
             str(input_path),
             str(outp),
             paper=args.paper,
-            signature=args.signature,
+            signature=sheets_pages,
             gutter_mm=args.gutter,
             creep_mm=args.creep,
             book=args.book,
