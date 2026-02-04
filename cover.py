@@ -53,13 +53,18 @@ def download_font(url):
         print(f"[!] Erreur font: {e}")
         return None
 
-def place_page_stretch(dest_page, src_doc, src_pno, target_rect):
+def place_page_stretch(dest_page, src_doc, src_pno, target_rect, verbose=False):
     """Redimensionne la page source pour qu'elle remplisse exactement la zone cible, en déformant si nécessaire."""
-    src_rect = src_doc[src_pno].rect
+    src_page = src_doc[src_pno]
+    src_rect = src_page.rect
+
+    if verbose:
+        print(f"  [DEBUG] Placement page {src_pno+1}: source={src_rect.width/MM_TO_PT:.1f}x{src_rect.height/MM_TO_PT:.1f}mm -> cible={target_rect.width/MM_TO_PT:.1f}x{target_rect.height/MM_TO_PT:.1f}mm")
+
     # Redimensionner pour remplir exactement la zone cible (déformation possible)
     dest_page.show_pdf_page(target_rect, src_doc, src_pno, clip=src_rect, keep_proportion=False)
 
-def make_cover(input_pdf, config_path, output_pdf, verbose=False):
+def make_cover(input_pdf, config_path, output_pdf, verbose=False, debug_borders=False):
     # --- Config ---
     cfg = {}
     if config_path and os.path.exists(config_path):
@@ -87,47 +92,58 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
     out = fitz.open()
 
     # --- Dimensions ---
-    a5_w_pt = mm2pt(A5_WIDTH_MM)
-    a5_h_pt = mm2pt(A5_HEIGHT_MM)
+    # Target size for covers: A5 + 2.5mm width + 5mm height
+    target_cover_w_pt = mm2pt(A5_WIDTH_MM + OVERHANG_MM)
+    target_cover_h_pt = mm2pt(A5_HEIGHT_MM + 2 * OVERHANG_MM)
 
-    overhang_pt = mm2pt(OVERHANG_MM)
+    # Target size for spine: spine_width + 5mm height
+    spine_w_pt = mm2pt(spine_width_mm)
+    target_spine_h_pt = target_cover_h_pt
 
     # --- Page 1: Front sur A4 portrait ---
     page_front = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
-    # Dépassement haut, bas et droit
+    # Centré sur A4
     inner_front = fitz.Rect(
-        (A4_WIDTH_PT - a5_w_pt) / 2,
-        (A4_HEIGHT_PT - a5_h_pt) / 2 - overhang_pt,
-        (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt + overhang_pt,
-        (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt + overhang_pt
+        (A4_WIDTH_PT - target_cover_w_pt) / 2,
+        (A4_HEIGHT_PT - target_cover_h_pt) / 2,
+        (A4_WIDTH_PT + target_cover_w_pt) / 2,
+        (A4_HEIGHT_PT + target_cover_h_pt) / 2
     )
-    place_page_stretch(page_front, doc, 0, inner_front)
+    if verbose:
+        print(f"Front Rect: {inner_front.width/MM_TO_PT:.2f}x{inner_front.height/MM_TO_PT:.2f}mm")
+    place_page_stretch(page_front, doc, 0, inner_front, verbose=verbose)
+    if debug_borders:
+        page_front.draw_rect(inner_front, color=(1, 0, 0), width=0.5)
 
     # --- Page 2: Back sur A4 portrait ---
     page_back = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
-    # Dépassement haut, bas et GAUCHE (côté extérieur)
+    # Centré sur A4
     inner_back = fitz.Rect(
-        (A4_WIDTH_PT - a5_w_pt) / 2 - overhang_pt,
-        (A4_HEIGHT_PT - a5_h_pt) / 2 - overhang_pt,
-        (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt,
-        (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt + overhang_pt
+        (A4_WIDTH_PT - target_cover_w_pt) / 2,
+        (A4_HEIGHT_PT - target_cover_h_pt) / 2,
+        (A4_WIDTH_PT + target_cover_w_pt) / 2,
+        (A4_HEIGHT_PT + target_cover_h_pt) / 2
     )
-    place_page_stretch(page_back, doc, doc.page_count - 1, inner_back)
+    if verbose:
+        print(f"Back Rect: {inner_back.width/MM_TO_PT:.2f}x{inner_back.height/MM_TO_PT:.2f}mm")
+    place_page_stretch(page_back, doc, doc.page_count - 1, inner_back, verbose=verbose)
+    if debug_borders:
+        page_back.draw_rect(inner_back, color=(1, 0, 0), width=0.5)
 
     # --- Page 3: Spine sur A4 portrait ---
     page_spine = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
-    spine_w_pt = mm2pt(spine_width_mm)
-    spine_center_x = A4_WIDTH_PT / 2
-    # Dépassement haut et bas uniquement
+    # Centré sur A4
     spine_rect = fitz.Rect(
-        spine_center_x - spine_w_pt / 2,
-        A4_HEIGHT_PT / 2 - a5_h_pt / 2 - overhang_pt,
-        spine_center_x + spine_w_pt / 2,
-        A4_HEIGHT_PT / 2 + a5_h_pt / 2 + overhang_pt
+        (A4_WIDTH_PT - spine_w_pt) / 2,
+        (A4_HEIGHT_PT - target_spine_h_pt) / 2,
+        (A4_WIDTH_PT + spine_w_pt) / 2,
+        (A4_HEIGHT_PT + target_spine_h_pt) / 2
     )
 
     # Remplir la zone de la tranche avec la couleur de fond
-    page_spine.draw_rect(spine_rect, fill=spine_color_rgb, width=0)
+    page_spine.draw_rect(spine_rect, fill=spine_color_rgb, width=0.5 if debug_borders else 0, color=(1,0,0) if debug_borders else None)
+    if verbose:
+        print(f"Spine Rect: {spine_rect.width/MM_TO_PT:.2f}x{spine_rect.height/MM_TO_PT:.2f}mm")
 
     # Police
     fontfile = None
@@ -235,23 +251,23 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
         print(f"Terminé → {output_pdf}")
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python cover_generator_a5_stretch.py input.pdf [config.json] [output_cover.pdf]")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Générateur de couverture A5 avec débords.")
+    parser.add_argument("input", help="PDF d'entrée")
+    parser.add_argument("config", nargs="?", help="Fichier JSON de config")
+    parser.add_argument("output", nargs="?", help="PDF de sortie")
+    parser.add_argument("--verbose", action="store_true", help="Plus de logs")
+    parser.add_argument("--debug-borders", action="store_true", help="Dessine des bordures rouges autour des zones de couverture")
 
-    input_pdf = sys.argv[1]
+    args = parser.parse_args()
+    input_pdf = args.input
 
     # Sortie & Config auto...
-    if len(sys.argv) >= 3 and sys.argv[-1].lower().endswith(".pdf") and "config" not in sys.argv[-1]:
-        output_pdf = sys.argv[-1]
-        conf_idx = 2 if len(sys.argv) == 4 else None
-    else:
-        output_pdf = f"{Path(input_pdf).stem} - Cover.pdf"
-        conf_idx = 2 if len(sys.argv) == 3 else None
+    output_pdf = args.output
+    config_path = args.config
 
-    config_path = None
-    if conf_idx:
-        config_path = sys.argv[conf_idx]
+    if not output_pdf:
+        output_pdf = f"{Path(input_pdf).stem} - Cover.pdf"
 
     if not config_path:
         d = os.path.dirname(input_pdf) or "."
@@ -260,7 +276,7 @@ def main():
         elif os.path.exists("config.json"):
             config_path = "config.json"
 
-    make_cover(input_pdf, config_path, output_pdf, verbose=True)
+    make_cover(input_pdf, config_path, output_pdf, verbose=True, debug_borders=args.debug_borders)
 
 if __name__ == "__main__":
     main()
