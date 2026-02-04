@@ -20,6 +20,7 @@ A4_WIDTH_PT = 595.276
 A4_HEIGHT_PT = 841.89
 A5_WIDTH_MM = 148.5  # 14.85 cm
 A5_HEIGHT_MM = 210.0  # 21 cm
+OVERHANG_MM = 2.5
 
 def mm2pt(mm):
     return mm * MM_TO_PT
@@ -52,13 +53,10 @@ def download_font(url):
         print(f"[!] Erreur font: {e}")
         return None
 
-def place_page_stretch_a5(dest_page, src_doc, src_pno, target_rect):
-    """Redimensionne la page source pour qu'elle remplisse exactement la zone A5 (21 cm × 14,8 cm), en déformant si nécessaire."""
+def place_page_stretch(dest_page, src_doc, src_pno, target_rect):
+    """Redimensionne la page source pour qu'elle remplisse exactement la zone cible, en déformant si nécessaire."""
     src_rect = src_doc[src_pno].rect
-    t_w, t_h = target_rect.width, target_rect.height
-    src_w, src_h = src_rect.width, src_rect.height
-
-    # Redimensionner pour remplir exactement la zone A5 (déformation possible)
+    # Redimensionner pour remplir exactement la zone cible (déformation possible)
     dest_page.show_pdf_page(target_rect, src_doc, src_pno, clip=src_rect, keep_proportion=False)
 
 def make_cover(input_pdf, config_path, output_pdf, verbose=False):
@@ -92,35 +90,40 @@ def make_cover(input_pdf, config_path, output_pdf, verbose=False):
     a5_w_pt = mm2pt(A5_WIDTH_MM)
     a5_h_pt = mm2pt(A5_HEIGHT_MM)
 
+    overhang_pt = mm2pt(OVERHANG_MM)
+
     # --- Page 1: Front sur A4 portrait ---
     page_front = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    # Dépassement haut, bas et droit
     inner_front = fitz.Rect(
         (A4_WIDTH_PT - a5_w_pt) / 2,
-        (A4_HEIGHT_PT - a5_h_pt) / 2,
-        (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt,
-        (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt
+        (A4_HEIGHT_PT - a5_h_pt) / 2 - overhang_pt,
+        (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt + overhang_pt,
+        (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt + overhang_pt
     )
-    place_page_stretch_a5(page_front, doc, 0, inner_front)
+    place_page_stretch(page_front, doc, 0, inner_front)
 
     # --- Page 2: Back sur A4 portrait ---
     page_back = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
+    # Dépassement haut, bas et GAUCHE (côté extérieur)
     inner_back = fitz.Rect(
-        (A4_WIDTH_PT - a5_w_pt) / 2,
-        (A4_HEIGHT_PT - a5_h_pt) / 2,
+        (A4_WIDTH_PT - a5_w_pt) / 2 - overhang_pt,
+        (A4_HEIGHT_PT - a5_h_pt) / 2 - overhang_pt,
         (A4_WIDTH_PT - a5_w_pt) / 2 + a5_w_pt,
-        (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt
+        (A4_HEIGHT_PT - a5_h_pt) / 2 + a5_h_pt + overhang_pt
     )
-    place_page_stretch_a5(page_back, doc, doc.page_count - 1, inner_back)
+    place_page_stretch(page_back, doc, doc.page_count - 1, inner_back)
 
     # --- Page 3: Spine sur A4 portrait ---
     page_spine = out.new_page(width=A4_WIDTH_PT, height=A4_HEIGHT_PT)
     spine_w_pt = mm2pt(spine_width_mm)
     spine_center_x = A4_WIDTH_PT / 2
+    # Dépassement haut et bas uniquement
     spine_rect = fitz.Rect(
         spine_center_x - spine_w_pt / 2,
-        A4_HEIGHT_PT / 2 - a5_h_pt / 2,
+        A4_HEIGHT_PT / 2 - a5_h_pt / 2 - overhang_pt,
         spine_center_x + spine_w_pt / 2,
-        A4_HEIGHT_PT / 2 + a5_h_pt / 2
+        A4_HEIGHT_PT / 2 + a5_h_pt / 2 + overhang_pt
     )
 
     # Remplir la zone de la tranche avec la couleur de fond
