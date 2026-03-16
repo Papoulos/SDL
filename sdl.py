@@ -17,6 +17,9 @@ https://www.scribd.com/embeds/{id}/content
 import re
 import time
 import argparse
+import subprocess
+import json
+import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 from pdf_utils import float_with_comma, crop_pdf, cut_pdf
@@ -33,7 +36,53 @@ def get_embed_url(url: str) -> str:
         return "https://www.scribd.com/embeds/{}/content".format(number_id)
     return url
 
-def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True):
+def optimize_pdf(filepath: Path):
+    """Optimise le fichier PDF en utilisant Ghostscript (ps2pdf)."""
+    print("[+] Optimisation du PDF avec Ghostscript...")
+
+    # Charger les paramètres depuis config.json
+    pdf_settings = "/prepress"
+    try:
+        config_path = Path(__file__).parent / "config.json"
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                pdf_settings = config.get("pdf_settings", "/prepress")
+    except Exception as e:
+        print("[!] Erreur lors de la lecture de config.json : {}".format(e))
+
+    temp_output = filepath.with_suffix('.optimized.pdf')
+
+    # Commande : ps2pdf -dPDFSETTINGS=/prepress "input.pdf" "output.pdf"
+    # Note : ps2pdf est un wrapper autour de gs
+    cmd = [
+        "ps2pdf",
+        "-dPDFSETTINGS={}".format(pdf_settings),
+        str(filepath),
+        str(temp_output)
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and temp_output.exists():
+            # Remplacer le fichier original par le fichier optimisé
+            os.replace(temp_output, filepath)
+            print("[+] PDF optimisé avec succès.")
+        else:
+            if "not found" in result.stderr or result.returncode == 127:
+                print("[!] Avertissement : Ghostscript (ps2pdf) n'est pas installé. Le fichier n'a pas été optimisé.")
+            else:
+                print("[!] Échec de l'optimisation par Ghostscript : {}".format(result.stderr))
+            if temp_output.exists():
+                os.remove(temp_output)
+    except FileNotFoundError:
+        print("[!] Avertissement : Ghostscript (ps2pdf) n'est pas installé sur le système. Le fichier n'a pas été optimisé.")
+    except Exception as e:
+        print("[!] Erreur imprévue lors de l'optimisation : {}".format(e))
+        if temp_output.exists():
+            os.remove(temp_output)
+
+def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
     embed_url = get_embed_url(url)
     print("[+] Using URL: {}".format(embed_url))
 
@@ -179,6 +228,9 @@ def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = 
 
             print("[+] PDF sauvegardé dans : {}".format(out_path.resolve()))
 
+            if optimize:
+                optimize_pdf(out_path)
+
         except Exception as e:
             print("[!] Échec de la génération ou sauvegarde du PDF : {}".format(e))
 
@@ -236,6 +288,13 @@ Les pages peuvent être spécifiées individuellement ou par intervalle:
 Utilisez 2 pour une qualité 'Retina' (double résolution).
 La valeur par défaut est 1 (qualité normale)."""
     )
+    parser.add_argument(
+        '-no-optimize', '--no-optimize',
+        action='store_false',
+        dest='optimize',
+        help="Ne pas optimiser le PDF final avec Ghostscript."
+    )
+    parser.set_defaults(optimize=True)
     args = parser.parse_args()
 
     output_pdf = args.output_pdf
@@ -255,4 +314,4 @@ La valeur par défaut est 1 (qualité normale)."""
         output_pdf = "{}.pdf".format(filename_base)
         print("[+] Nom de fichier non fourni. Utilisation auto : {}".format(output_pdf))
 
-    run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True)
+    run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize)

@@ -4,5 +4,6 @@
   "spine_width_mm": 15,
   "text": "",
   "spine_color": "#a9c4d1",
-  "text_color": "#000000"
+  "text_color": "#000000",
+  "pdf_settings": "/prepress"
 }
