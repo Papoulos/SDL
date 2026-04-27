@@ -20,6 +20,11 @@ import argparse
 import subprocess
 import json
 import os
+import io
+import requests
+import urllib3
+from urllib.parse import urljoin
+from PIL import Image
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 from pdf_utils import float_with_comma, crop_pdf, cut_pdf
@@ -82,7 +87,162 @@ def optimize_pdf(filepath: Path):
         if temp_output.exists():
             os.remove(temp_output)
 
-def run(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
+def run_anyflip(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
+    print("[+] Mode AnyFlip détecté.")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(
+            viewport={"width": 1200, "height": 900},
+            device_scale_factor=quality
+        )
+        page = context.new_page()
+
+        try:
+            print("[+] Navigating to AnyFlip...")
+            page.goto(url, timeout=60000)
+        except PWTimeoutError:
+            print("[!] Timeout lors du chargement d'AnyFlip.")
+
+        # Extract last page number
+        try:
+            content = page.content()
+            m = re.search(r'pages:\s*"(\d+)",', content)
+            if m:
+                last_page = int(m.group(1))
+                print("[+] Nombre de pages détecté : {}".format(last_page))
+            else:
+                print("[!] Impossible de détecter le nombre de pages.")
+                browser.close()
+                return
+        except Exception as e:
+            print("[!] Erreur lors de l'extraction des infos : {}".format(e))
+            browser.close()
+            return
+
+        # Go into the frame
+        print("[+] En attente de l'iFrame du livre...")
+        try:
+            page.wait_for_selector('iframe#show-iFrame-book', timeout=20000)
+            frame = page.frame(name="show-iFrame-book")
+            if not frame:
+                # fall back to finding by ID if name is not set
+                frame_element = page.query_selector('iframe#show-iFrame-book')
+                frame = frame_element.content_frame()
+        except PWTimeoutError:
+            print("[!] iFrame introuvable.")
+            browser.close()
+            return
+
+        page_images = []
+        current_p = 1
+
+        # On AnyFlip, the navigation is usually:
+        # Page 1 (alone)
+        # Page 2-3 (double)
+        # ...
+        # Last Page (might be alone)
+
+        print("[+] Début de la récupération des images...")
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+
+        while current_p <= last_page:
+            print("[+] Traitement page(s) {}/{}...".format(current_p, last_page))
+
+            # Attendre que l'image de la page soit visible dans la frame
+            try:
+                selector = "#page{} img".format(current_p)
+                frame.wait_for_selector(selector, timeout=15000)
+                img_src = frame.locator(selector).get_attribute("src")
+
+                if img_src:
+                    if not img_src.startswith('http'):
+                        img_src = urljoin(url, img_src)
+
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    response = requests.get(img_src, headers=headers, verify=False, timeout=30)
+                    if response.status_code == 200:
+                        img = Image.open(io.BytesIO(response.content))
+                        page_images.append(img.convert('RGB'))
+                    else:
+                        print("[!] Erreur {} lors du téléchargement de l'image {}".format(response.status_code, current_p))
+            except Exception as e:
+                print("[!] Erreur sur la page {} : {}".format(current_p, e))
+
+            # Si on n'est pas à la première page et pas à la dernière, on a souvent deux pages affichées
+            if current_p > 1 and current_p < last_page:
+                next_p = current_p + 1
+                try:
+                    selector = "#page{} img".format(next_p)
+                    # On vérifie si elle existe déjà (sans wait_for car elle doit être là si en double page)
+                    img_elem = frame.query_selector(selector)
+                    if img_elem:
+                        img_src = img_elem.get_attribute("src")
+                        if img_src:
+                            if not img_src.startswith('http'):
+                                img_src = urljoin(url, img_src)
+                            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                            response = requests.get(img_src, headers=headers, verify=False, timeout=30)
+                            if response.status_code == 200:
+                                img = Image.open(io.BytesIO(response.content))
+                                page_images.append(img.convert('RGB'))
+                                current_p = next_p # On a traité deux pages
+                except Exception as e:
+                    print("[!] Erreur sur la page adjacente {} : {}".format(next_p, e))
+
+            # Click Next Page
+            try:
+                # AnyFlip buttons are often in the parent page or in the frame
+                # The reference uses: //span[contains(text(), 'Next Page')]/ancestor::div[@class='button']
+                # But it depends on the UI version. Let's try multiple ways.
+                next_button = frame.locator("//span[contains(text(), 'Next Page')]/ancestor::div[@class='button']")
+                if next_button.count() > 0:
+                    next_button.first.click()
+                else:
+                    # Alternative for some versions
+                    next_button = page.locator(".next-button")
+                    if next_button.count() > 0:
+                        next_button.first.click()
+
+                time.sleep(1) # Small delay for animation
+            except:
+                pass
+
+            current_p += 1
+
+        if not page_images:
+            print("[!] Aucune image récupérée.")
+            browser.close()
+            return
+
+        print("[+] Conversion des images en PDF...")
+        pdf_buffer = io.BytesIO()
+        page_images[0].save(pdf_buffer, format="PDF", save_all=True, append_images=page_images[1:])
+        pdf_data = pdf_buffer.getvalue()
+
+        if crop_margins:
+            print("[+] Rognage du PDF...")
+            pdf_data = crop_pdf(pdf_data, crop_margins)
+
+        if cut_pages_str:
+            print("[+] Suppression de pages...")
+            pdf_data = cut_pdf(pdf_data, cut_pages_str)
+
+        out_path = Path(out_pdf)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, 'wb') as f:
+            f.write(pdf_data)
+
+        print("[+] PDF AnyFlip sauvegardé dans : {}".format(out_path.resolve()))
+
+        if optimize:
+            optimize_pdf(out_path)
+
+        browser.close()
+
+def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
     embed_url = get_embed_url(url)
     print("[+] Using URL: {}".format(embed_url))
 
@@ -254,8 +414,13 @@ Exemples d'utilisation:
   python3 sdl.py "url_du_document" mon_fichier.pdf --crop 1 2 1,5 1.5
 """
     )
-    parser.add_argument('url', metavar='URL', help="L'URL du document Scribd à télécharger.")
+    parser.add_argument('url', metavar='URL', help="L'URL du document (Scribd ou AnyFlip) à télécharger.")
     parser.add_argument('output_pdf', metavar='FICHIER_SORTIE', nargs='?', default=None, help='Le chemin du fichier PDF de sortie (optionnel).\nSi non fourni, le nom est dérivé du dernier segment de l\'URL.')
+    parser.add_argument(
+        '--any', '--anyflip',
+        action='store_true',
+        help="Forcer le mode AnyFlip."
+    )
     parser.add_argument(
         '--crop',
         nargs=4,
@@ -314,4 +479,9 @@ La valeur par défaut est 1 (qualité normale)."""
         output_pdf = "{}.pdf".format(filename_base)
         print("[+] Nom de fichier non fourni. Utilisation auto : {}".format(output_pdf))
 
-    run(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize)
+    is_anyflip = args.any or "anyflip.com" in args.url.lower()
+
+    if is_anyflip:
+        run_anyflip(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize)
+    else:
+        run_scribd(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize)
