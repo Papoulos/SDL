@@ -89,158 +89,134 @@ def optimize_pdf(filepath: Path):
 
 def run_anyflip(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
     print("[+] Mode AnyFlip détecté.")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context(
-            viewport={"width": 1200, "height": 900},
-            device_scale_factor=quality
-        )
-        page = context.new_page()
 
-        try:
-            print("[+] Navigating to AnyFlip...")
-            page.goto(url, timeout=60000)
-        except PWTimeoutError:
-            print("[!] Timeout lors du chargement d'AnyFlip.")
+    # 1. Sanitize URL to get the base path
+    # e.g. https://anyflip.com/zzlpv/uxov/ -> /zzlpv/uxov/
+    from urllib.parse import urlparse
+    parsed_url = urlparse(url)
+    path_parts = [p for p in parsed_url.path.split('/') if p]
+    if len(path_parts) < 2:
+        print("[!] URL AnyFlip invalide.")
+        return
 
-        # Extract last page number
+    base_path = "/{}/{}/".format(path_parts[0], path_parts[1])
+    config_url = "https://online.anyflip.com{}mobile/javascript/config.js".format(base_path)
+
+    print("[+] Récupération de la configuration : {}".format(config_url))
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+    try:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        response = requests.get(config_url, headers=headers, verify=False, timeout=30)
+        if response.status_code != 200:
+            print("[!] Impossible de récupérer config.js (Status {})".format(response.status_code))
+            return
+        config_js = response.text
+    except Exception as e:
+        print("[!] Erreur lors de la récupération de la configuration : {}".format(e))
+        return
+
+    # 2. Extract page count
+    # Regex inspired by anyflip-downloader
+    page_count = 0
+    m_count = re.search(r'(?:bookConfig\.)?(?:total)?[Pp]ageCount["\']?[=:]["\']?(\d+)["\']?', config_js)
+    if m_count:
+        page_count = int(m_count.group(1))
+        print("[+] Nombre de pages détecté : {}".format(page_count))
+    else:
+        print("[!] Impossible de détecter le nombre de pages dans config.js.")
+        return
+
+    # 3. Extract page filenames
+    page_filenames = []
+    # matches "n":["filename.webp"]
+    matches = re.findall(r'"n":\["(.*?)"\]', config_js)
+    if matches:
+        # Clean filenames (sometimes they contain ../ prefix)
+        for m in matches:
+            fname = m.replace('\\/', '/').split('/')[-1]
+            page_filenames.append(fname)
+        print("[+] Liste de fichiers trouvée ({} fichiers).".format(len(page_filenames)))
+    else:
+        print("[+] Aucune liste de fichiers spécifique, utilisation du mode séquentiel.")
+
+    # 4. Build image URLs (priority to "large")
+    image_urls = []
+    if page_filenames:
+        for fname in page_filenames:
+            # Try large first
+            img_url = "https://online.anyflip.com{}files/large/{}".format(base_path, fname)
+            image_urls.append(img_url)
+    else:
+        # Sequential mode, try large first, then mobile
+        for i in range(1, page_count + 1):
+            image_urls.append("https://online.anyflip.com{}files/large/{}.jpg".format(base_path, i))
+
+    # 5. Download images
+    page_images = []
+    print("[+] Téléchargement des images...")
+    for i, img_url in enumerate(image_urls):
+        print("\r[+] Téléchargement page {}/{}...".format(i+1, len(image_urls)), end="", flush=True)
         try:
-            content = page.content()
-            m = re.search(r'pages:\s*"(\d+)",', content)
-            if m:
-                last_page = int(m.group(1))
-                print("[+] Nombre de pages détecté : {}".format(last_page))
-            else:
-                print("[!] Impossible de détecter le nombre de pages.")
-                browser.close()
-                return
+            resp = requests.get(img_url, headers=headers, verify=False, timeout=15)
+            if resp.status_code != 200:
+                # Fallback to mobile if large fails or if the extension was wrong
+                fallbacks = []
+                if "files/large/" in img_url:
+                    fallbacks.append(img_url.replace("files/large/", "files/mobile/"))
+
+                # If it was a sequential .jpg, maybe it's actually .webp (rare but possible)
+                if img_url.endswith(".jpg"):
+                    fallbacks.append(img_url[:-4] + ".webp")
+                    if "files/large/" in img_url:
+                        fallbacks.append(img_url.replace("files/large/", "files/mobile/")[:-4] + ".webp")
+
+                success = False
+                for fallback_url in fallbacks:
+                    resp = requests.get(fallback_url, headers=headers, verify=False, timeout=10)
+                    if resp.status_code == 200:
+                        success = True
+                        break
+
+                if not success:
+                    print("\n[!] Échec du téléchargement pour la page {} (Status {})".format(i+1, resp.status_code))
+                    continue
+
+            img = Image.open(io.BytesIO(resp.content))
+            page_images.append(img.convert('RGB'))
         except Exception as e:
-            print("[!] Erreur lors de l'extraction des infos : {}".format(e))
-            browser.close()
-            return
+            print("\n[!] Erreur lors du téléchargement de la page {} : {}".format(i+1, e))
+    print()
 
-        # Go into the frame
-        print("[+] En attente de l'iFrame du livre...")
-        try:
-            page.wait_for_selector('iframe#show-iFrame-book', timeout=20000)
-            frame = page.frame(name="show-iFrame-book")
-            if not frame:
-                # fall back to finding by ID if name is not set
-                frame_element = page.query_selector('iframe#show-iFrame-book')
-                frame = frame_element.content_frame()
-        except PWTimeoutError:
-            print("[!] iFrame introuvable.")
-            browser.close()
-            return
+    if not page_images:
+        print("[!] Aucune image n'a pu être téléchargée.")
+        return
 
-        page_images = []
-        current_p = 1
+    # 6. PDF Assembly
+    print("[+] Assemblage du PDF...")
+    pdf_buffer = io.BytesIO()
+    page_images[0].save(pdf_buffer, format="PDF", save_all=True, append_images=page_images[1:])
+    pdf_data = pdf_buffer.getvalue()
 
-        # On AnyFlip, the navigation is usually:
-        # Page 1 (alone)
-        # Page 2-3 (double)
-        # ...
-        # Last Page (might be alone)
+    if crop_margins:
+        print("[+] Rognage du PDF...")
+        pdf_data = crop_pdf(pdf_data, crop_margins)
 
-        print("[+] Début de la récupération des images...")
+    if cut_pages_str:
+        print("[+] Suppression de pages...")
+        pdf_data = cut_pdf(pdf_data, cut_pages_str)
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
+    out_path = Path(out_pdf)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, 'wb') as f:
+        f.write(pdf_data)
 
-        while current_p <= last_page:
-            print("[+] Traitement page(s) {}/{}...".format(current_p, last_page))
+    print("[+] PDF AnyFlip sauvegardé dans : {}".format(out_path.resolve()))
 
-            # Attendre que l'image de la page soit visible dans la frame
-            try:
-                selector = "#page{} img".format(current_p)
-                frame.wait_for_selector(selector, timeout=15000)
-                img_src = frame.locator(selector).get_attribute("src")
-
-                if img_src:
-                    if not img_src.startswith('http'):
-                        img_src = urljoin(url, img_src)
-
-                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    response = requests.get(img_src, headers=headers, verify=False, timeout=30)
-                    if response.status_code == 200:
-                        img = Image.open(io.BytesIO(response.content))
-                        page_images.append(img.convert('RGB'))
-                    else:
-                        print("[!] Erreur {} lors du téléchargement de l'image {}".format(response.status_code, current_p))
-            except Exception as e:
-                print("[!] Erreur sur la page {} : {}".format(current_p, e))
-
-            # Si on n'est pas à la première page et pas à la dernière, on a souvent deux pages affichées
-            if current_p > 1 and current_p < last_page:
-                next_p = current_p + 1
-                try:
-                    selector = "#page{} img".format(next_p)
-                    # On vérifie si elle existe déjà (sans wait_for car elle doit être là si en double page)
-                    img_elem = frame.query_selector(selector)
-                    if img_elem:
-                        img_src = img_elem.get_attribute("src")
-                        if img_src:
-                            if not img_src.startswith('http'):
-                                img_src = urljoin(url, img_src)
-                            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                            response = requests.get(img_src, headers=headers, verify=False, timeout=30)
-                            if response.status_code == 200:
-                                img = Image.open(io.BytesIO(response.content))
-                                page_images.append(img.convert('RGB'))
-                                current_p = next_p # On a traité deux pages
-                except Exception as e:
-                    print("[!] Erreur sur la page adjacente {} : {}".format(next_p, e))
-
-            # Click Next Page
-            try:
-                # AnyFlip buttons are often in the parent page or in the frame
-                # The reference uses: //span[contains(text(), 'Next Page')]/ancestor::div[@class='button']
-                # But it depends on the UI version. Let's try multiple ways.
-                next_button = frame.locator("//span[contains(text(), 'Next Page')]/ancestor::div[@class='button']")
-                if next_button.count() > 0:
-                    next_button.first.click()
-                else:
-                    # Alternative for some versions
-                    next_button = page.locator(".next-button")
-                    if next_button.count() > 0:
-                        next_button.first.click()
-
-                time.sleep(1) # Small delay for animation
-            except:
-                pass
-
-            current_p += 1
-
-        if not page_images:
-            print("[!] Aucune image récupérée.")
-            browser.close()
-            return
-
-        print("[+] Conversion des images en PDF...")
-        pdf_buffer = io.BytesIO()
-        page_images[0].save(pdf_buffer, format="PDF", save_all=True, append_images=page_images[1:])
-        pdf_data = pdf_buffer.getvalue()
-
-        if crop_margins:
-            print("[+] Rognage du PDF...")
-            pdf_data = crop_pdf(pdf_data, crop_margins)
-
-        if cut_pages_str:
-            print("[+] Suppression de pages...")
-            pdf_data = cut_pdf(pdf_data, cut_pages_str)
-
-        out_path = Path(out_pdf)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, 'wb') as f:
-            f.write(pdf_data)
-
-        print("[+] PDF AnyFlip sauvegardé dans : {}".format(out_path.resolve()))
-
-        if optimize:
-            optimize_pdf(out_path)
-
-        browser.close()
+    if optimize:
+        optimize_pdf(out_path)
 
 def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
     embed_url = get_embed_url(url)
