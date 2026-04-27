@@ -3,3 +3,4 @@ pypdf
 pikepdf
 PyMuPDF
 requests
+Pillow
