@@ -196,22 +196,26 @@ def run_anyflip(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str
 
     # 6. PDF Assembly
     print("[+] Assemblage du PDF...")
-    pdf_buffer = io.BytesIO()
-    page_images[0].save(pdf_buffer, format="PDF", save_all=True, append_images=page_images[1:])
-    pdf_data = pdf_buffer.getvalue()
-
-    if crop_margins:
-        print("[+] Rognage du PDF...")
-        pdf_data = crop_pdf(pdf_data, crop_margins)
-
-    if cut_pages_str:
-        print("[+] Suppression de pages...")
-        pdf_data = cut_pdf(pdf_data, cut_pages_str)
-
     out_path = Path(out_pdf)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, 'wb') as f:
-        f.write(pdf_data)
+
+    # Sauvegarde directe sur disque pour économiser la mémoire
+    page_images[0].save(str(out_path), format="PDF", save_all=True, append_images=page_images[1:])
+
+    if crop_margins or cut_pages_str:
+        with open(out_path, 'rb') as f:
+            pdf_data = f.read()
+
+        if crop_margins:
+            print("[+] Rognage du PDF...")
+            pdf_data = crop_pdf(pdf_data, crop_margins)
+
+        if cut_pages_str:
+            print("[+] Suppression de pages...")
+            pdf_data = cut_pdf(pdf_data, cut_pages_str)
+
+        with open(out_path, 'wb') as f:
+            f.write(pdf_data)
 
     print("[+] PDF AnyFlip sauvegardé dans : {}".format(out_path.resolve()))
 
@@ -339,28 +343,37 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
         time.sleep(1.0 + 0.01 * SCROLL_STEP)
 
         # Génération PDF
-        print("[+] Génération du PDF en mémoire...")
+        print("[+] Génération du PDF...")
         try:
-            pdf_data = page.pdf(
+            out_path = Path(out_pdf)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Utiliser 'path' pour sauvegarder directement sur le disque
+            # Cela évite de charger tout le PDF en mémoire dans le processus Chromium/Playwright
+            # ce qui peut causer l'erreur "Cannot create a string longer than..."
+            page.pdf(
+                path=str(out_path),
                 format="A4",
                 print_background=True,
                 prefer_css_page_size=True,
                 margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
             )
-            print("[+] PDF généré avec succès en mémoire.")
 
-            if crop_margins:
-                print("[+] Rognage du PDF...")
-                pdf_data = crop_pdf(pdf_data, crop_margins)
+            if crop_margins or cut_pages_str:
+                # Si on doit modifier le PDF, on le recharge depuis le disque
+                with open(out_path, 'rb') as f:
+                    pdf_data = f.read()
 
-            if cut_pages_str:
-                print("[+] Suppression de pages...")
-                pdf_data = cut_pdf(pdf_data, cut_pages_str)
+                if crop_margins:
+                    print("[+] Rognage du PDF...")
+                    pdf_data = crop_pdf(pdf_data, crop_margins)
 
-            out_path = Path(out_pdf)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, 'wb') as f:
-                f.write(pdf_data)
+                if cut_pages_str:
+                    print("[+] Suppression de pages...")
+                    pdf_data = cut_pdf(pdf_data, cut_pages_str)
+
+                with open(out_path, 'wb') as f:
+                    f.write(pdf_data)
 
             print("[+] PDF sauvegardé dans : {}".format(out_path.resolve()))
 
