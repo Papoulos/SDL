@@ -27,6 +27,7 @@ from urllib.parse import urljoin
 from PIL import Image
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
+from pypdf import PdfWriter, PdfReader
 from pdf_utils import float_with_comma, crop_pdf, cut_pdf
 
 SCROLL_STEP = 300
@@ -222,7 +223,7 @@ def run_anyflip(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str
     if optimize:
         optimize_pdf(out_path)
 
-def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True):
+def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str: str = None, quality: int = 1, headless: bool = True, optimize: bool = True, total_pages_override: int = None):
     embed_url = get_embed_url(url)
     print("[+] Using URL: {}".format(embed_url))
 
@@ -233,7 +234,6 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
             device_scale_factor=quality
         )
         page = context.new_page()
-
         try:
             print("[+] Navigating...")
             page.goto(embed_url, timeout=60000) # 60s timeout
@@ -340,7 +340,7 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
 
         # Attendre quelques instants pour s'assurer que tout est chargé
         print("[+] Attente finale pour le chargement des pages...")
-        time.sleep(1.0 + 0.01 * SCROLL_STEP)
+        time.sleep(2.0)
 
         # Génération PDF
         print("[+] Génération du PDF...")
@@ -348,16 +348,83 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
             out_path = Path(out_pdf)
             out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Utiliser 'path' pour sauvegarder directement sur le disque
-            # Cela évite de charger tout le PDF en mémoire dans le processus Chromium/Playwright
-            # ce qui peut causer l'erreur "Cannot create a string longer than..."
-            page.pdf(
-                path=str(out_path),
-                format="A4",
-                print_background=True,
-                prefer_css_page_size=True,
-                margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
-            )
+            # Tentative de détection du nombre de pages pour le chunking
+            total_pages = 0
+            if total_pages_override:
+                total_pages = total_pages_override
+                print("[+] Utilisation du nombre de pages fourni manuellement : {}".format(total_pages))
+            else:
+                total_pages = page.evaluate(r"""() => {
+                    const selectors = ['.page-container', 'div[data-page-number]', '.absimg', '.outer_page', '.page_missing_explanation_container'];
+                    let maxCount = 0;
+                    for (const s of selectors) {
+                        const count = document.querySelectorAll(s).length;
+                        if (count > maxCount) maxCount = count;
+                    }
+                    if (maxCount > 0) return maxCount;
+
+                    // Fallback: try to find the total page count in the UI text
+                    const footers = ['.page_number_input_container', '.num_pages', '.total_pages'];
+                    for (const f of footers) {
+                        const el = document.querySelector(f);
+                        if (el && el.innerText) {
+                            const match = el.innerText.match(/(\d+)/);
+                            if (match) return parseInt(match[1]);
+                        }
+                    }
+
+                    // Final fallback: check window properties
+                    if (window.docManager && window.docManager.expected_page_count) {
+                        return window.docManager.expected_page_count;
+                    }
+
+                    return 0;
+                }""")
+                print("[+] Nombre de pages détecté pour la génération : {}".format(total_pages))
+
+            # Si plus de 50 pages (ou si forcé), on utilise le chunking pour éviter la limite de mémoire de Playwright
+            CHUNK_SIZE = 50
+            if total_pages > CHUNK_SIZE:
+                print("[+] Document volumineux détecté. Utilisation de la génération par morceaux (chunks de {})...".format(CHUNK_SIZE))
+                chunks = []
+                for start in range(1, total_pages + 1, CHUNK_SIZE):
+                    end = min(start + CHUNK_SIZE - 1, total_pages)
+                    page_range = "{}-{}".format(start, end)
+                    chunk_path = out_path.with_suffix(".chunk_{}_{}.pdf".format(start, end))
+                    print("    -> Génération des pages {}...".format(page_range))
+                    page.pdf(
+                        path=str(chunk_path),
+                        page_ranges=page_range,
+                        format="A4",
+                        print_background=True,
+                        prefer_css_page_size=True,
+                        margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
+                    )
+                    chunks.append(chunk_path)
+
+                print("[+] Fusion des morceaux...")
+                merger = PdfWriter()
+                for chunk in chunks:
+                    merger.append(chunk)
+
+                with open(out_path, 'wb') as f:
+                    merger.write(f)
+
+                # Nettoyage des morceaux
+                for chunk in chunks:
+                    try:
+                        os.remove(chunk)
+                    except:
+                        pass
+            else:
+                # Génération classique pour les petits documents
+                page.pdf(
+                    path=str(out_path),
+                    format="A4",
+                    print_background=True,
+                    prefer_css_page_size=True,
+                    margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
+                )
 
             if crop_margins or cut_pages_str:
                 # Si on doit modifier le PDF, on le recharge depuis le disque
@@ -381,6 +448,8 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
                 optimize_pdf(out_path)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print("[!] Échec de la génération ou sauvegarde du PDF : {}".format(e))
 
         browser.close()
@@ -448,6 +517,11 @@ La valeur par défaut est 1 (qualité normale)."""
         dest='optimize',
         help="Ne pas optimiser le PDF final avec Ghostscript."
     )
+    parser.add_argument(
+        '--total-pages',
+        type=int,
+        help="Spécifier manuellement le nombre total de pages (utile si l'auto-détection échoue pour les gros fichiers)."
+    )
     parser.set_defaults(optimize=True)
     args = parser.parse_args()
 
@@ -473,4 +547,4 @@ La valeur par défaut est 1 (qualité normale)."""
     if is_anyflip:
         run_anyflip(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize)
     else:
-        run_scribd(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize)
+        run_scribd(args.url, output_pdf, crop_margins=args.crop, cut_pages_str=args.cut, quality=args.quality, headless=True, optimize=args.optimize, total_pages_override=args.total_pages)
