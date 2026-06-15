@@ -354,33 +354,40 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
                 total_pages = total_pages_override
                 print("[+] Utilisation du nombre de pages fourni manuellement : {}".format(total_pages))
             else:
-                total_pages = page.evaluate(r"""() => {
-                    const selectors = ['.page-container', 'div[data-page-number]', '.absimg', '.outer_page', '.page_missing_explanation_container'];
-                    let maxCount = 0;
-                    for (const s of selectors) {
-                        const count = document.querySelectorAll(s).length;
-                        if (count > maxCount) maxCount = count;
+                det = page.evaluate(r"""() => {
+                    // 1. Window properties (most reliable)
+                    if (window.docManager && window.docManager.expected_page_count) {
+                        return { count: window.docManager.expected_page_count, method: 'window.docManager' };
                     }
-                    if (maxCount > 0) return maxCount;
 
-                    // Fallback: try to find the total page count in the UI text
-                    const footers = ['.page_number_input_container', '.num_pages', '.total_pages'];
+                    // 2. UI text
+                    const footers = ['.num_pages', '.total_pages', '.page_number_input_container'];
                     for (const f of footers) {
                         const el = document.querySelector(f);
                         if (el && el.innerText) {
                             const match = el.innerText.match(/(\d+)/);
-                            if (match) return parseInt(match[1]);
+                            if (match) return { count: parseInt(match[1]), method: 'UI footer ' + f };
                         }
                     }
 
-                    // Final fallback: check window properties
-                    if (window.docManager && window.docManager.expected_page_count) {
-                        return window.docManager.expected_page_count;
+                    // 3. Reliable page selectors (1 per page)
+                    const pageSelectors = ['.page-container', 'div[data-page-number]', '.outer_page'];
+                    for (const s of pageSelectors) {
+                        const count = document.querySelectorAll(s).length;
+                        if (count > 0) return { count: count, method: 'selector ' + s };
                     }
 
-                    return 0;
+                    // 4. Less reliable selectors
+                    const fallbackSelectors = ['.absimg', '.page_missing_explanation_container'];
+                    for (const s of fallbackSelectors) {
+                        const count = document.querySelectorAll(s).length;
+                        if (count > 0) return { count: count, method: 'fallback selector ' + s };
+                    }
+
+                    return { count: 0, method: 'none' };
                 }""")
-                print("[+] Nombre de pages détecté pour la génération : {}".format(total_pages))
+                total_pages = det['count']
+                print("[+] Nombre de pages détecté : {} (via {})".format(total_pages, det['method']))
 
             # Si plus de 50 pages (ou si forcé), on utilise le chunking pour éviter la limite de mémoire de Playwright
             CHUNK_SIZE = 50
@@ -392,15 +399,24 @@ def run_scribd(url: str, out_pdf: str, crop_margins: list = None, cut_pages_str:
                     page_range = "{}-{}".format(start, end)
                     chunk_path = out_path.with_suffix(".chunk_{}_{}.pdf".format(start, end))
                     print("    -> Génération des pages {}...".format(page_range))
-                    page.pdf(
-                        path=str(chunk_path),
-                        page_ranges=page_range,
-                        format="A4",
-                        print_background=True,
-                        prefer_css_page_size=True,
-                        margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
-                    )
-                    chunks.append(chunk_path)
+                    try:
+                        page.pdf(
+                            path=str(chunk_path),
+                            page_ranges=page_range,
+                            format="A4",
+                            print_background=True,
+                            prefer_css_page_size=True,
+                            margin={"top": "10mm", "bottom": "10mm", "left": "8mm", "right": "8mm"}
+                        )
+                        chunks.append(chunk_path)
+                    except Exception as e:
+                        if "Page range exceeds page count" in str(e):
+                            print("    [!] Fin réelle du document atteinte (la plage {} dépasse le nombre de pages).".format(page_range))
+                            if chunk_path.exists():
+                                os.remove(chunk_path)
+                            break
+                        else:
+                            raise e
 
                 print("[+] Fusion des morceaux...")
                 merger = PdfWriter()
